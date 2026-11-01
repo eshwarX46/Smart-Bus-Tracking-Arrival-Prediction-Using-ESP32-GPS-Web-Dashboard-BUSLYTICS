@@ -209,17 +209,6 @@ The ESP32 serves its dashboard over port 80. Public read endpoints and password-
 
 Protected operations use an X-Admin-Key request header. Security warning: HTTP traffic is not encrypted, and read endpoints expose location information to users with network access. Use BUSLYTICS on a trusted local network, not directly on the public internet.
 
-## 📂 Repository Structure
-
-| Path | Purpose |
-| --- | --- |
-| `README.md` | Project documentation |
-| `firmware/BUSLYTICS/BUSLYTICS.ino` | Single-file ESP32 sketch with embedded dashboard |
-| `docs/images/architecture.png` | System architecture |
-| `docs/images/wiring.png` | Connection reference |
-| `docs/images/flowchart.png` | Firmware operation flow |
-| `docs/images/dashboard-demo.png` | Illustrative dashboard preview |
-
 ## 🩺 Troubleshooting
 
 | Problem | What to check |
