@@ -1,0 +1,1082 @@
+/*
+  SMART BUS TRACKING & ARRIVAL PREDICTION
+  ONE FILE ONLY: ESP32 + GPS + LCD + premium local dashboard
+  Edit WIFI_SSID, WIFI_PASSWORD, AP_PASSWORD and ADMIN_PASSWORD below.
+  No Firebase or separate HTML/header files needed.
+  LCD shows the dashboard IP until a browser opens the dashboard, then
+  cycles through eight information pages. Simulator's optional LCD mirror requires the same
+  administrator password already configured in this sketch.
+
+  HARDWARE (preserves the tested Stage 3 wiring):
+    NEO-6M GPS TX -> ESP32 GPIO16 (RX2)
+    NEO-6M GPS GND -> GND
+    GPS VCC -> verified, compatible GPS module supply
+    LCD I2C SDA -> GPIO21, SCL -> GPIO22
+    LCD I2C address: 0x27
+
+  5V LCD I2C backpacks may require a bidirectional 3.3V/5V level
+  shifter. Do not pull ESP32 I2C pins up to 5V directly.
+
+  LIBRARIES:
+    ESP32 by Espressif Systems (Boards Manager)
+    TinyGPSPlus by Mikal Hart
+    LiquidCrystal_I2C (init()/backlight() compatible variant)
+    ArduinoJson 7.x by Benoit Blanchon
+  ESP32 WiFi, WebServer, Preferences, Wire are provided by core.
+*/
+
+#include <WiFi.h>
+#include <WebServer.h>
+#include <Preferences.h>
+#include <Wire.h>
+#include <TinyGPSPlus.h>
+#include <LiquidCrystal_I2C.h>
+#include <ArduinoJson.h>
+#include <math.h>
+// Embedded local dashboard (combined from dashboard.h)
+const char DASHBOARD_HTML[] PROGMEM = R"__SMARTBUS__(
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#0a1220">
+<title>BUSLYTICS — Smart Bus Command Center</title>
+<link rel="preconnect" href="https://unpkg.com">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+:root{color-scheme:dark;--bg:#080e19;--side:#0c1524;--panel:#111d2c;--panel2:#152335;--line:#26374b;--text:#eff6ff;--muted:#8fa5bc;--blue:#55a7ff;--cyan:#56dbff;--green:#48dda1;--yellow:#ffcf81;--red:#ff8e98;--shadow:0 18px 45px rgba(0,0,0,.2)}
+*{box-sizing:border-box}body{margin:0;color:var(--text);font-family:Inter,ui-sans-serif,system-ui,-apple-system,Segoe UI,Arial,sans-serif;background:radial-gradient(ellipse at 80% -15%,#11263a 0,transparent 35%),var(--bg);font-size:14px}button,input{font:inherit}button{cursor:pointer}button:disabled{opacity:.55;cursor:not-allowed}a{color:var(--blue)}svg{display:block}#app{display:flex;min-height:100vh}.sidebar{background:linear-gradient(180deg,#0e1a2b,#09111e);border-right:1px solid #22354a;width:244px;min-width:244px;position:sticky;top:0;height:100vh;padding:25px 15px;display:flex;flex-direction:column}.brand{display:flex;align-items:center;gap:12px;padding:5px 11px 33px}.brand-icon{background:linear-gradient(150deg,#158bd6,#3c68ec);border:1px solid #5ce0ff88;box-shadow:0 0 30px #1785ec33;border-radius:13px;display:grid;place-items:center;width:42px;height:42px;font-size:23px}.brand-title{font-size:18px;font-weight:840;letter-spacing:.5px}.brand-sub{font-size:9px;color:var(--muted);letter-spacing:2px;margin-top:3px}.navtitle{padding:9px 13px;color:#687f97;font-size:10px;font-weight:800;letter-spacing:2px;margin:3px 0 8px}.nav{display:flex;align-items:center;gap:12px;width:100%;text-align:left;background:none;border:0;border-radius:10px;padding:12px 13px;color:#9bb0c5;font-weight:610;margin:3px 0}.nav:hover{background:#16293d;color:white}.nav.active{color:#eff8ff;background:linear-gradient(90deg,#16518b,#15344e);box-shadow:inset 3px 0 #53c8ff}.nav .ni{font-size:17px;width:22px;text-align:center}.side-bottom{margin-top:auto;padding:17px 12px;border-radius:13px;background:#132538;border:1px solid #25394d}.p-dot{width:8px;height:8px;border-radius:50%;background:var(--green);box-shadow:0 0 0 5px #50df9e1f;display:inline-block;margin-right:8px}.sidebar-copy{color:var(--muted);font-size:12px;line-height:1.7}.main{flex:1;min-width:0;padding:25px clamp(18px,3vw,42px) 45px;max-width:1650px;margin:auto}.topbar{display:flex;justify-content:space-between;align-items:center;gap:15px;padding-bottom:24px;border-bottom:1px solid #23374a}.eyebrow{font-size:11px;letter-spacing:2.3px;font-weight:800;color:var(--cyan);text-transform:uppercase}.headline{font-size:clamp(25px,3vw,35px);line-height:1.13;font-weight:820;letter-spacing:-.8px;margin:8px 0 6px}.lead{color:var(--muted);font-size:13px}.top-right{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.pill{border:1px solid #294257;background:#13293b;border-radius:50px;padding:9px 12px;font-size:11px;font-weight:720;letter-spacing:.5px;display:inline-flex;gap:8px;align-items:center}.pill.green{border-color:#24644f;background:#10463855;color:var(--green)}.pill.red{border-color:#7c3d47;background:#5b202655;color:var(--red)}.pill.yellow{border-color:#755b39;background:#60491c44;color:var(--yellow)}.button{padding:10px 15px;background:#1d3650;border:1px solid #35516d;border-radius:10px;color:white;font-weight:730}.button:hover{background:#2c5276}.button.primary{background:linear-gradient(135deg,#168ddb,#3876ee);border-color:#57abf6;box-shadow:0 5px 20px #227bd238}.button.ghost{background:#122339}.button.danger{color:#ffabb5;border-color:#633c49;background:#40212955}.btn-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.view{display:none;padding-top:25px}.view.active{display:block}.hero{background:linear-gradient(115deg,#162d46,#101d2e 62%,#122136);border:1px solid #2e4a63;border-radius:20px;padding:22px 25px;margin-bottom:17px;display:flex;justify-content:space-between;align-items:center;gap:15px;position:relative;overflow:hidden}.hero:after{content:'';width:270px;height:270px;position:absolute;right:24%;top:-170px;border-radius:50%;background:#3797e815;filter:blur(15px);pointer-events:none}.hero h2{font-size:23px;margin:7px 0;font-weight:820;letter-spacing:-.5px}.hero p{margin:0;color:var(--muted);font-size:12px}.smallcaps{font-size:10px;letter-spacing:1.8px;color:var(--muted);font-weight:820;text-transform:uppercase}.hero-id{font-size:11px;letter-spacing:1.6px;color:#a5daff;border:1px solid #427aab;background:#18446e66;padding:8px 12px;border-radius:8px;font-weight:800}.stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:15px;margin-bottom:17px}.card{background:linear-gradient(145deg,#132134,#101b2b);border:1px solid #273a4e;border-radius:16px;padding:20px;box-shadow:var(--shadow)}.stat{min-height:116px}.stat .stat-icon{font-size:19px;color:var(--cyan);float:right}.stat .value{font-size:31px;font-weight:840;letter-spacing:-1px;margin:10px 0 3px}.stat .value small{font-weight:650;font-size:12px;color:var(--muted);letter-spacing:0}.stat .stat-note{font-size:11px;color:var(--muted)}.grid-main{display:grid;grid-template-columns:minmax(0,1.65fr) minmax(285px,1fr);gap:17px}.card-title{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:16px}.card-title h3{margin:0;font-size:16px;letter-spacing:-.2px}.card-title p{font-size:11px;color:var(--muted);margin:5px 0 0}.map-card{padding:17px}.map{height:383px;background:radial-gradient(circle at 70% 40%,#263f5c,#101b2c 75%);border-radius:12px;overflow:hidden;position:relative}.map-blank{padding:50px 25px;text-align:center;color:var(--muted);font-size:14px}.map-foot{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;padding:15px 2px 0;color:var(--muted);font-size:11px}.stop-list{display:flex;flex-direction:column;gap:10px;max-height:392px;overflow:auto;padding-right:2px}.stop{border:1px solid #2c4054;background:#14263a;border-radius:12px;padding:14px;display:flex;justify-content:space-between;align-items:center;gap:10px}.stop.next{border-color:#2d8cdb;background:linear-gradient(95deg,#14395b,#16283b)}.stop .step{width:27px;height:27px;display:grid;place-items:center;flex-shrink:0;background:#254158;border-radius:8px;color:#b0c6db;font-size:11px;font-weight:800}.stop.next .step{background:#1576c5;color:white}.stop-title{font-size:13px;font-weight:760}.stop-sub{font-size:11px;color:var(--muted);margin-top:5px}.stop-eta{font-size:18px;font-weight:830;color:#ebf6ff;white-space:nowrap}.stop-eta small{display:block;font-size:10px;color:var(--muted);text-align:right;margin-top:5px}.bottom-grid{display:grid;grid-template-columns:1fr 1fr;gap:17px;margin-top:17px}.data-row{display:flex;justify-content:space-between;border-bottom:1px solid #273748;padding:11px 0;gap:10px}.data-row:last-child{border-bottom:0}.data-row span{color:var(--muted)}.data-row strong{font-weight:700;text-align:right;word-break:break-word}.chart{height:110px;width:100%;margin:15px 0 2px;overflow:visible}.foot-note{color:#778fa6;font-size:11px;line-height:1.6;margin-top:20px}.preview-alert{border:1px solid #92632d;background:#57421f66;color:#ffdb98;padding:11px 15px;border-radius:11px;margin:16px 0 0;font-size:12px;display:none}.preview-alert.visible{display:block}.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:13px}.field{display:flex;flex-direction:column;gap:8px}.field label{font-size:11px;font-weight:800;color:#9cbbd0;letter-spacing:.5px}.field input{width:100%;background:#0d192a;border:1px solid #32485f;padding:11px 12px;border-radius:9px;outline:none;color:white}.field input:focus{border-color:#51aaff;box-shadow:0 0 0 2px #287dd631}.form-grid .wide{grid-column:1/-1}.editor-table{display:flex;flex-direction:column;gap:9px;margin:12px 0}.edit-stop{background:#112438;border:1px solid #2b4359;padding:12px;border-radius:11px;display:grid;grid-template-columns:minmax(100px,1.3fr) 1fr 1fr auto;gap:9px;align-items:center}.edit-stop input{min-width:0;background:#091727;color:white;padding:10px 9px;border:1px solid #30465c;border-radius:7px;width:100%}.tag{font-size:10px;border:1px solid #34516b;border-radius:6px;padding:5px 8px;color:#8ed2ff}.subtext{color:var(--muted);font-size:12px;line-height:1.65}.section-spacer{height:16px}.notice{padding:12px 14px;border:1px solid #38516c;background:#14283e;border-radius:11px;color:#b9d9f0;font-size:12px;line-height:1.7}.empty{padding:30px 15px;text-align:center;color:var(--muted);border:1px dashed #33475c;border-radius:12px;font-size:12px;line-height:1.8}.leaflet-container{background:#112439!important;font-family:inherit}.leaflet-control-attribution{background:#102236d9!important;color:#96adc3!important}.leaflet-control-attribution a{color:#6dcfff!important}.bus-marker{background:#198ce5;border:3px solid #a7e4ff;box-shadow:0 0 0 9px #1b9ff633,0 0 26px #239cff88;border-radius:50%;width:23px;height:23px}.toast{position:fixed;bottom:25px;right:25px;z-index:9999;padding:14px 17px;background:#193149;border:1px solid #407ba9;color:white;border-radius:12px;box-shadow:0 20px 50px #0009;max-width:340px;font-size:12px;display:none}.toast.visible{display:block}.mono{font-variant-numeric:tabular-nums}.small{font-size:11px;color:var(--muted)}.help-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:14px}.help-tile{border:1px solid #2a4058;border-radius:12px;padding:16px;background:#102238}.help-tile strong{display:block;margin-bottom:8px}.leaflet-popup-content-wrapper,.leaflet-popup-tip{background:#14273d;color:#fff}.leaflet-popup-content{line-height:1.6}.route-badge{color:#7bccff;font-size:11px;font-weight:800}.toolbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+@media(max-width:1100px){.sidebar{width:190px;min-width:190px}.stats{grid-template-columns:repeat(2,1fr)}.grid-main{grid-template-columns:1fr}.stop-list{max-height:none}.bottom-grid{grid-template-columns:1fr}}@media(max-width:700px){#view-settings .bottom-grid{grid-template-columns:1fr!important}#app{display:block}.sidebar{height:auto;position:static;width:100%;padding:12px 12px;display:block}.brand{padding:0 2px 13px}.brand-icon{width:34px;height:34px;font-size:18px}.brand-sub,.navtitle,.side-bottom{display:none}.nav-holder{display:flex;overflow:auto;gap:5px}.nav{min-width:max-content;width:auto;font-size:11px;padding:9px 11px}.nav .ni{font-size:15px;width:auto}.main{padding:18px 12px 35px}.topbar{align-items:flex-start;flex-direction:column;padding-bottom:16px}.stats{gap:9px}.card{padding:14px}.stat{min-height:103px}.stat .value{font-size:25px}.hero{padding:18px;align-items:flex-start;flex-wrap:wrap}.hero h2{font-size:20px}.map{height:330px}.bottom-grid{gap:11px}.edit-stop{grid-template-columns:1fr 1fr}.edit-stop input:first-child{grid-column:1/-1}.form-grid{grid-template-columns:1fr}.help-grid{grid-template-columns:1fr}.hero-id{margin-top:5px}}
+</style>
+</head>
+<body>
+<div id="app">
+<aside class="sidebar">
+ <div class="brand"><div class="brand-icon">🚌</div><div><div class="brand-title">BUSLYTICS<span style="color:#58cdff">.</span></div><div class="brand-sub">SMART TRANSIT OS</div></div></div>
+ <div class="navtitle">WORKSPACE</div>
+ <div class="nav-holder">
+  <button class="nav active" data-page="overview"><span class="ni">◈</span> Overview</button>
+  <button class="nav" data-page="map"><span class="ni">◉</span> Live Tracking</button>
+  <button class="nav" data-page="simulator"><span class="ni">▶</span> Bus Simulator</button>
+  <button class="nav" data-page="stops"><span class="ni">⌖</span> Stops & ETA</button>
+  <button class="nav" data-page="device"><span class="ni">▣</span> Device Health</button>
+  <button class="nav" data-page="history"><span class="ni">▤</span> Trip History</button>
+  <button class="nav" data-page="settings"><span class="ni">⚙</span> Route Setup</button>
+ </div>
+ <div class="side-bottom"><div><span class="p-dot" id="side-dot"></span><strong id="side-state">Checking device</strong></div><p class="sidebar-copy">Local-first tracking. Powered by ESP32 + GPS. No Firebase subscription required.</p><div class="small" id="side-ip">ESP32 • local network</div></div>
+</aside>
+<main class="main">
+ <header class="topbar"><div><div class="eyebrow">FLEET OPERATIONS / LIVE COMMAND CENTER</div><h1 class="headline" id="page-title">Smart Bus Dashboard</h1><div class="lead" id="page-desc">Location intelligence and arrival forecasts, live from your ESP32.</div></div><div class="top-right"><span class="pill" id="device-pill"><span class="p-dot"></span> CONNECTING</span><span class="pill yellow" id="mode-indicator">REAL GPS</span><span class="pill" id="clock-pill">--:--:--</span></div></header>
+ <div class="preview-alert" id="demo-warning">DEMO PREVIEW — This file displays illustrative sample values. Upload the Arduino sketch to see real GPS data through your ESP32 IP address.</div>
+ <section class="view active" id="view-overview">
+  <div class="hero"><div><div class="smallcaps">ACTIVE VEHICLE • REAL-TIME MONITORING</div><h2 id="hero-route">Waiting for GPS tracker...</h2><p id="hero-note">Hardware telemetry and route status will appear here.</p></div><div class="hero-id" id="hero-bus-id">BUS001</div></div>
+  <div class="stats">
+   <div class="card stat"><span class="stat-icon">↗</span><div class="smallcaps">CURRENT SPEED</div><div class="value mono"><span id="speed-value">--</span> <small>km/h</small></div><div class="stat-note" id="speed-note">Awaiting GPS</div></div>
+   <div class="card stat"><span class="stat-icon">◷</span><div class="smallcaps">NEXT STOP ETA</div><div class="value mono"><span id="eta-value">--</span> <small id="eta-unit">min</small></div><div class="stat-note" id="eta-note">Add stops to activate ETA</div></div>
+   <div class="card stat"><span class="stat-icon">✦</span><div class="smallcaps">SATELLITES</div><div class="value mono" id="sat-value">--</div><div class="stat-note" id="sat-note">GPS acquisition</div></div>
+   <div class="card stat"><span class="stat-icon">◉</span><div class="smallcaps">GPS POSITION</div><div class="value" id="fix-value" style="font-size:25px">WAITING</div><div class="stat-note" id="fix-note">Last known location</div></div>
+  </div>
+  <div class="grid-main"><div class="card map-card"><div class="card-title"><div><h3>Live Location</h3><p>Updated automatically • GPS coordinates</p></div><span class="tag" id="map-badge">GPS MAP</span></div><div class="map" id="map-main"><div class="map-blank">Loading map...</div></div><div class="map-foot"><span id="coord-text">LAT -- • LON --</span><span id="map-refresh">Waiting for GPS...</span></div></div>
+  <div class="card"><div class="card-title"><div><h3>Route & Upcoming Stops</h3><p id="route-name">Configure a bus route to see predictions</p></div><span class="route-badge" id="upcoming-count">0 STOPS</span></div><div id="stops-mini" class="stop-list"></div><div style="margin-top:14px"><button class="button ghost" data-go="settings">Manage route →</button></div></div></div>
+  <div class="bottom-grid"><div class="card"><div class="card-title"><div><h3>Speed Telemetry</h3><p>Recent speed readings received from GPS</p></div><span class="tag">LIVE DATA</span></div><svg class="chart" id="speed-chart" viewBox="0 0 550 115" preserveAspectRatio="none"><path d="M0 100 H550" stroke="#263d54"/><path d="M0 55 H550" stroke="#263d54"/><path d="M0 12 H550" stroke="#263d54"/><polyline id="chart-line" fill="none" stroke="#51baff" stroke-width="3" points=""/></svg><div class="map-foot"><span id="avg-speed">Average speed: --</span><span>Recent readings</span></div></div>
+  <div class="card"><div class="card-title"><h3>Tracking Snapshot</h3><span class="tag">DEVICE</span></div><div class="data-row"><span>GPS fix age</span><strong id="snap-age">--</strong></div><div class="data-row"><span>Wi-Fi signal</span><strong id="snap-rssi">--</strong></div><div class="data-row"><span>Map position</span><strong id="snap-coords">--</strong></div><div class="data-row"><span>Next scheduled stop</span><strong id="snap-next">Not configured</strong></div></div></div>
+ </section>
+ <section class="view" id="view-simulator">
+  <div class="hero"><div><div class="smallcaps" style="color:#ffcf81">SIMULATION MODE • TRAINING / COLLEGE DEMO</div><h2>Virtual Bus Journey</h2><p>Animate the bus along your configured stops without moving the GPS hardware. This is simulated, not a real bus location.</p></div><span class="pill yellow" id="sim-pill">SIM OFF</span></div>
+  <div class="card" style="margin-bottom:16px">
+   <div class="card-title"><div><h3>Simulator Controls</h3><p>Save at least two real bus-stop coordinates in Route Setup first. Road routing uses internet, otherwise the route falls back to straight lines.</p></div><span class="tag" id="sim-route-type">NO ROUTE</span></div>
+   <div class="toolbar" style="margin-bottom:17px"><button class="button primary" id="sim-build">Load Route & Enable Simulation</button><button class="button primary" id="sim-play" disabled>▶ Start</button><button class="button ghost" id="sim-reset" disabled>↺ Reset</button><button class="button danger" id="sim-exit" disabled>Return to Real GPS</button></div>
+   <div class="form-grid"><div class="field"><label>SIMULATED BUS SPEED: <strong id="sim-speed-label">40 km/h</strong></label><input id="sim-speed" type="range" min="10" max="100" step="5" value="40" style="accent-color:#55a7ff"></div><div class="field"><label>DEMO PLAYBACK SPEED: <strong id="sim-mult-label">60×</strong></label><select id="sim-mult" style="background:#0d192a;border:1px solid #32485f;border-radius:9px;color:white;padding:11px"><option value="1">1× (real-time)</option><option value="10">10×</option><option value="30">30×</option><option value="60" selected>60× (recommended)</option><option value="120">120× (fast demo)</option></select></div></div>
+   <div class="notice" style="margin:12px 0"><div class="field"><label>OPTIONAL: MIRROR SIMULATION SPEED AND ETA ON 16×2 LCD</label><input id="sim-lcd-key" type="password" autocomplete="off" placeholder="Enter sketch ADMIN_PASSWORD to enable LCD mirror" style="max-width:470px"></div><p class="subtext" id="sim-lcd-status">LCD uses real GPS until this password is supplied. Simulation is always labeled SIM on the LCD.</p></div>
+   <p class="subtext">Trip History: enter the admin password in Trip History (or LCD Mirror above) to automatically save each completed simulated journey in ESP32 flash.</p><p class="subtext" id="sim-explanation">Simulation is disabled. The physical GPS may correctly show 0 km/h when stationary.</p>
+   <div style="height:8px;background:#233d54;border-radius:30px;overflow:hidden;margin-top:15px"><div id="sim-progress" style="height:100%;width:0%;background:linear-gradient(90deg,#3a82f6,#48dda1);transition:width .4s"></div></div>
+   <div class="map-foot"><strong id="sim-current">No journey loaded</strong><strong id="sim-distance">0.0 / 0.0 km</strong></div>
+  </div>
+  <div class="stats" style="grid-template-columns:repeat(2,minmax(0,1fr))"><div class="card stat"><div class="smallcaps">NEXT BUS STOP</div><div class="value" id="sim-next" style="font-size:21px">--</div><div class="stat-note" id="sim-next-eta">Waiting for route</div></div><div class="card stat"><div class="smallcaps">SIMULATED TRIP CLOCK</div><div class="value" id="sim-clock" style="font-size:23px">--:--</div><div class="stat-note">Arrival clock is simulated; playback can run faster than time.</div></div></div>
+  <div class="card map-card"><div class="card-title"><div><h3>Animated Bus Route</h3><p id="sim-map-caption">The animated marker will move along the selected road route when routing is available.</p></div><span class="tag">SIMULATED</span></div><div class="map" id="map-simulator" style="height:min(57vh,530px)"><div class="map-blank">Preparing simulator...</div></div><div class="map-foot"><span id="sim-route-note">Set up the route and click Load Route</span><span>Road-routing service requires internet</span></div></div>
+  <div class="notice" style="margin-top:15px">The ESP32 GPS receiver and LCD continue running normally in the background. Simulation is normally browser-only. With optional authenticated LCD mirroring, the device briefly shows SIM-labeled speed, coordinates and ETA. Closing the tab or stopping mirroring returns the LCD to real GPS within several seconds. Simulated positions are never presented as actual GPS readings, and this does not create a remote public-tracking service.</div>
+ </section>
+ <section class="view" id="view-map"><div class="card map-card"><div class="card-title"><div><h3>Live Vehicle Tracking</h3><p>Interactive live map, upcoming route stops, and recent position trail</p></div><button class="button" id="btn-center-map">Center bus</button></div><div class="map" id="map-large" style="height:min(67vh,630px)"><div class="map-blank">Loading live map...</div></div><div class="map-foot"><span id="map-live-coords">GPS: waiting...</span><span>OpenStreetMap tiles require an internet connection</span></div></div><div class="notice" style="margin-top:15px">During route setup, press “Pick on map,” then click a point on this map to fill its latitude and longitude. The route line is an illustrative straight-line connection between stops, not road navigation.</div></section>
+ <section class="view" id="view-stops"><div class="hero"><div><div class="smallcaps">ARRIVAL PREDICTION ENGINE</div><h2 id="eta-route-name">Scheduled Stops & ETA</h2><p id="eta-explanation">Predictions use remaining distance and speed. Simulator mode shows virtual travel times.</p></div><span class="pill yellow">◷ APPROXIMATE</span></div><div class="card"><div class="card-title"><h3>Arrival Timeline</h3><button class="button" data-go="settings">Edit stops</button></div><div id="stops-all" class="stop-list"></div></div><div class="notice" style="margin-top:16px">REAL GPS ETA uses straight-line distances and measured/fallback speed. SIMULATION ETA uses the loaded road route when available, or straight-line fallback. Neither mode incorporates live traffic. Arrival times are estimates.</div></section>
+ <section class="view" id="view-device"><div class="hero"><div><div class="smallcaps">EMBEDDED TELEMETRY</div><h2>ESP32 Device Health</h2><p>Verify GPS, satellites, internet connection and device uptime.</p></div><span class="pill" id="health-pill">WAITING</span></div><div class="bottom-grid"><div class="card"><div class="card-title"><h3>GPS Receiver</h3><span class="tag">NEO-6M</span></div><div class="data-row"><span>Fix</span><strong id="dev-fix">--</strong></div><div class="data-row"><span>Satellites</span><strong id="dev-sat">--</strong></div><div class="data-row"><span>Latitude</span><strong id="dev-lat">--</strong></div><div class="data-row"><span>Longitude</span><strong id="dev-lon">--</strong></div><div class="data-row"><span>Heading</span><strong id="dev-heading">--</strong></div><div class="data-row"><span>HDOP</span><strong id="dev-hdop">--</strong></div></div><div class="card"><div class="card-title"><h3>Network & Controller</h3><span class="tag">ESP32</span></div><div class="data-row"><span>Station Wi-Fi</span><strong id="dev-wifi">--</strong></div><div class="data-row"><span>Station IP</span><strong id="dev-ip">--</strong></div><div class="data-row"><span>Local AP IP</span><strong id="dev-ap">192.168.4.1</strong></div><div class="data-row"><span>Signal strength</span><strong id="dev-rssi">--</strong></div><div class="data-row"><span>Uptime</span><strong id="dev-uptime">--</strong></div><div class="data-row"><span>Free heap</span><strong id="dev-heap">--</strong></div></div></div><div class="notice" style="margin-top:16px">Device Health always shows the PHYSICAL ESP32 and GPS readings. Simulator readings are virtual and displayed separately. Connect your phone/laptop to the same network as the ESP32 to access this local dashboard.</div></section>
+   <section class="view" id="view-history">
+   <div class="hero"><div><div class="smallcaps">ESP32 FLASH STORAGE / LOCAL TRIP LOG</div><h2>Trip History</h2><p>Completed simulator journeys and manually recorded GPS trips saved directly to the ESP32. No Firebase, cloud or browser storage.</p></div><span class="pill green" id="history-store-pill">ON-DEVICE</span></div>
+   <div class="stats"><div class="card stat"><div class="smallcaps">STORED TRIPS</div><div class="value" id="history-count">0</div><div class="stat-note">Up to 30 recent records</div></div><div class="card stat"><div class="smallcaps">SAVED DISTANCE</div><div class="value"><span id="history-distance">0.0</span> <small>km</small></div><div class="stat-note">Combined real + simulated</div></div><div class="card stat"><div class="smallcaps">SIMULATED</div><div class="value" id="history-sim-count">0</div><div class="stat-note">Virtual trips, clearly labeled</div></div><div class="card stat"><div class="smallcaps">REAL GPS</div><div class="value" id="history-gps-count">0</div><div class="stat-note">Manually recorded GPS trips</div></div></div>
+   <div class="card" style="margin-bottom:16px"><div class="card-title"><div><h3>Recording Controls</h3><p>Enter the same administrator password used in Route Setup. It stays in this browser tab's memory only.</p></div><span class="tag" id="history-active-status">NO GPS TRIP</span></div>
+     <div class="form-grid"><div class="field wide"><label>ADMIN PASSWORD FOR TRIP RECORDING / DELETING</label><input id="history-admin" type="password" autocomplete="off" placeholder="Enter your existing ADMIN_PASSWORD"></div></div>
+     <div class="btn-row" style="margin-top:15px"><button class="button primary" id="history-start-gps">Start GPS Trip</button><button class="button" id="history-stop-gps">Finish GPS Trip</button><button class="button ghost" id="history-refresh">↻ Refresh</button><button class="button danger" id="history-clear">Clear All History</button></div>
+     <p class="subtext" id="history-message">GPS trip recording continues on the ESP32 while your browser is closed, until you finish the trip. Simulator trips are saved automatically when a journey finishes, resets or exits, provided the admin password is entered here or in the simulator LCD Mirror field. No continuous flash writes.</p>
+   </div>
+   <div class="card"><div class="card-title"><div><h3>Recent Trips</h3><p>Stored as compact summaries in ESP32 Preferences (NVS) • newest first</p></div><span class="tag" id="history-count-tag">0 RECORDS</span></div><div id="history-records" style="display:flex;flex-direction:column;gap:11px"><div class="empty">No trips saved yet. Run the simulator and complete a trip, or start/finish a GPS trip.</div></div></div>
+   <div class="notice" style="margin-top:16px">Storage holds the latest 30 trip summaries and survives normal restarts and code uploads that do not erase flash. New entries replace the oldest automatically. Start/end time uses the browser clock. GPS journey distance is measured only from valid moving GPS fixes; simulated trip duration is virtual journey time. Clearing history permanently removes trip records only, not saved stops or route configuration. A power loss during a running trip can lose that unfinished trip.</div>
+  </section>
+<section class="view" id="view-settings"><div class="hero"><div><div class="smallcaps">ADMINISTRATOR CONFIGURATION</div><h2>Vehicle & Stop Configuration</h2><p>Save settings to ESP32 nonvolatile storage, so they persist after reboot.</p></div><span class="pill yellow">🔒 ADMIN ACCESS</span></div><div class="bottom-grid" style="grid-template-columns:minmax(0,1fr) minmax(0,1.25fr)"><div class="card"><div class="card-title"><h3>Vehicle Details</h3><span class="tag">01 BUS</span></div><div class="form-grid"><div class="field"><label>BUS ID</label><input id="cfg-id" maxlength="20" placeholder="BUS001"></div><div class="field"><label>FALLBACK SPEED (KM/H)</label><input type="number" min="5" max="80" step="1" id="cfg-speed" value="25"></div><div class="field wide"><label>ROUTE NAME</label><input id="cfg-route" maxlength="55" placeholder="College Bus Route"></div><div class="field wide"><label>NEXT STOP INDEX (0 = FIRST STOP)</label><input id="cfg-next" type="number" min="0" value="0"></div><div class="field wide"><label>ADMIN PASSWORD (REQUIRED TO SAVE)</label><input id="cfg-admin" type="password" autocomplete="off" placeholder="Password set in Arduino sketch"></div></div><p class="subtext">If the bus is stationary, ETA uses your fallback speed and is clearly labeled as an estimate. The next-stop index updates automatically when the bus remains within approximately 80 m of a stop for 8 seconds.</p></div><div class="card"><div class="card-title"><div><h3>Bus Stop Editor</h3><p>Stops must be in travel order</p></div><span class="tag" id="editor-count">0 STOPS</span></div><div id="editor-stops" class="editor-table"></div><div class="btn-row"><button class="button ghost" id="btn-add-stop">+ Add stop</button><button class="button ghost" id="btn-map-pick">⌖ Pick on map</button><button class="button ghost" id="btn-current-pos">Use GPS point</button></div><div class="section-spacer"></div><div class="notice">To add stops, enter the names and coordinates in route order. For map picking, add a stop first and then choose its position. Maximum 12 stops.</div><div class="section-spacer"></div><div class="btn-row"><button class="button primary" id="btn-save">Save settings to ESP32</button><button class="button ghost" id="btn-reload">Discard changes</button></div></div></div><div class="foot-note">Security: The local dashboard uses an administrator password for modifying route information; it does not encrypt traffic (HTTP). Only use it on networks you trust. Anyone with network access can view GPS coordinates.</div></section>
+ <div class="foot-note">BUSLYTICS • ESP32 Local Tracking Edition • GPS positions are approximate • Arrival predictions are not traffic-aware • For demonstration and educational use.</div>
+</main></div><div class="toast" id="toast"></div>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+'use strict';
+const DEMO=location.protocol==='file:'||new URLSearchParams(location.search).has('demo');
+const $=id=>document.getElementById(id);const $$=sel=>Array.from(document.querySelectorAll(sel));
+const demoSettings={bus_id:'BUS001',route_name:'Demo City Route',default_speed_kmh:25,next_stop_index:0,stops:[{name:'Stop 1',lat:12.9742,lon:77.5970},{name:'Stop 2',lat:12.9780,lon:77.6020},{name:'Destination',lat:12.9830,lon:77.6070}]};
+let realData=null;let sim={active:false,playing:false,loaded:false,loading:false,route:[],cumulative:[],stopsAt:[],distance:0,total:0,speed:40,mult:60,startedAt:0,simClock:0,mode:"none",nextIndex:1,lastTick:0,finished:false,version:0};
+let config={bus_id:'BUS001',route_name:'New Route',default_speed_kmh:25,next_stop_index:0,stops:[]};let data=null;let view='overview';let maps={};let markers={};let pathLines={};let trailLines={};let trail=[];let speedSamples=[];let nextPick=false;let editStops=[];let mapCentered=false;let lastSuccessfulFetch=0;let notifTimer;
+function text(id,value){const el=$(id);if(el)el.textContent=value==null?'--':String(value)}
+function toast(msg){const el=$('toast');el.textContent=msg;el.classList.add('visible');clearTimeout(notifTimer);notifTimer=setTimeout(()=>el.classList.remove('visible'),3800)}
+function displayStatus(status){const pill=$('device-pill');const simStatus=status.startsWith('SIM');pill.className='pill '+(simStatus?'yellow':status==='LIVE'?'green':status==='OFFLINE'?'red':'yellow');pill.innerHTML='<span class="p-dot"></span>'+status;text('side-state',simStatus?'Virtual trip (demo)':status==='LIVE'?'Tracking online':status==='OFFLINE'?'ESP32 unreachable':'Awaiting GPS');$('side-dot').style.background=simStatus?'#ffcf81':status==='LIVE'?'#48dda1':status==='OFFLINE'?'#ff8e98':'#ffcf81'}
+function fmtSec(seconds){if(!Number.isFinite(seconds))return '--';const h=Math.floor(seconds/3600),m=Math.floor(seconds/60)%60,s=Math.floor(seconds)%60;return(h?h+'h ':'')+(h||m?m+'m ':'')+s+'s'}
+function km(a,b){const rad=Math.PI/180,R=6371,dlat=(b.lat-a.lat)*rad,dlon=(b.lon-a.lon)*rad,x=Math.sin(dlat/2)**2+Math.cos(a.lat*rad)*Math.cos(b.lat*rad)*Math.sin(dlon/2)**2;return 2*R*Math.asin(Math.min(1,Math.sqrt(x)))}
+function hasFix(){const d=sourceData();return !!(d&&d.gps&&d.gps.valid&&Number.isFinite(d.gps.lat)&&Number.isFinite(d.gps.lon))}
+const tripHistoryState={rows:[],gpsActive:false,simCapture:null,simWriteBusy:false};
+function tripPassword(){return ($('history-admin')?.value||$('sim-lcd-key')?.value||$('cfg-admin')?.value||'').trim()}
+function formatTripDate(epoch){return epoch&&epoch>1600000000?new Date(epoch*1000).toLocaleString():'Not recorded'}
+function formatTripDuration(s){const n=Math.max(0,Number(s)||0),h=Math.floor(n/3600),m=Math.floor((n%3600)/60),sec=Math.floor(n%60);return(h?h+'h ':'')+(h||m?m+'m ':'')+sec+'s'}
+function renderTripHistory(){
+ const rows=tripHistoryState.rows;
+ text('history-count',rows.length);text('history-sim-count',rows.filter(t=>t.kind==='SIM').length);text('history-gps-count',rows.filter(t=>t.kind==='GPS').length);
+ text('history-distance',rows.reduce((a,t)=>a+(Number(t.distance_km)||0),0).toFixed(1));text('history-count-tag',rows.length+' RECORDS');
+ text('history-active-status',tripHistoryState.gpsActive?'GPS RECORDING':'NO GPS TRIP');
+ $('history-start-gps').disabled=tripHistoryState.gpsActive;$('history-stop-gps').disabled=!tripHistoryState.gpsActive;
+ $('history-records').innerHTML=rows.length?rows.map(t=>`<div class="stop" style="align-items:flex-start;flex-wrap:wrap"><div style="flex:1;min-width:210px"><div class="stop-title">${escapeHTML(t.route||'Bus route')} <span class="tag" style="margin-left:6px">${t.kind==='SIM'?'SIMULATION':'REAL GPS'}</span></div><div class="stop-sub">${escapeHTML(t.bus||'BUS001')} • ${escapeHTML(t.from||'Start')} → ${escapeHTML(t.to||'End')} • ${escapeHTML(t.status||'COMPLETED')} • ${formatTripDate(t.start_epoch)}</div><div class="stop-sub">${Number(t.distance_km||0).toFixed(2)} km • ${formatTripDuration(t.duration_s)} ${t.kind==='SIM'?'(virtual)':''} • Avg ${Number(t.avg_kmh||0).toFixed(1)} km/h • Max ${Number(t.max_kmh||0).toFixed(1)} km/h</div></div><button class="button danger" data-trip-delete="${Number(t.id)}">Delete</button></div>`).join(''):'<div class="empty">No trip records stored on the ESP32 yet.<br>Enter the admin password, then complete a simulation or record a GPS trip.</div>';
+ $$('[data-trip-delete]').forEach(b=>b.onclick=()=>deleteTrip(Number(b.dataset.tripDelete)));
+}
+async function tripsRequest(url,payload){
+ const key=tripPassword();if(!key)throw Error('Enter your administrator password in Trip History or LCD Mirror first');
+ const res=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json','X-Admin-Key':key},body:JSON.stringify(payload),cache:'no-store'});
+ const result=await res.json();if(!res.ok)throw Error(result.error||'Request failed '+res.status);return result;
+}
+async function refreshTripHistory(){
+ if(DEMO){renderTripHistory();return}
+ try{const result=await getJSON('/api/trips');tripHistoryState.rows=result.trips||[];tripHistoryState.gpsActive=!!result.gps_active;renderTripHistory()}
+ catch(e){text('history-message','Could not read ESP32 trip records: '+e.message)}
+}
+async function startGPSTrip(){if(DEMO)return toast('Trip storage requires the ESP32, not the offline preview');try{await tripsRequest('/api/trips/start-gps',{epoch:Math.floor(Date.now()/1000)});toast('GPS trip recording started on ESP32');await refreshTripHistory()}catch(e){toast('GPS recording: '+e.message)}}
+async function stopGPSTrip(){try{await tripsRequest('/api/trips/stop-gps',{epoch:Math.floor(Date.now()/1000)});toast('GPS trip saved in ESP32 flash');await refreshTripHistory()}catch(e){toast('GPS recording: '+e.message)}}
+async function deleteTrip(id){if(!confirm('Permanently delete this stored trip?'))return;try{await tripsRequest('/api/trips/delete',{id});toast('Trip removed from ESP32');await refreshTripHistory()}catch(e){toast('Delete failed: '+e.message)}}
+async function clearAllTrips(){if(!confirm('Permanently erase ALL locally stored trips? Your saved route and stops will not be affected.'))return;try{await tripsRequest('/api/trips/clear',{});tripHistoryState.simCapture=null;toast('Trip history cleared from ESP32');await refreshTripHistory()}catch(e){toast('Clear failed: '+e.message)}}
+function beginSimTripCapture(){
+ if(tripHistoryState.simCapture)return;
+ if(!tripPassword()){toast('To save this simulated trip, enter ADMIN password on Trip History or LCD Mirror');return}
+ tripHistoryState.simCapture={start_epoch:Math.floor(Date.now()/1000),start_clock:sim.simClock,start_distance:sim.distance,max_kmh:sim.speed};
+}
+async function finishSimTripCapture(status){
+ const rec=tripHistoryState.simCapture;if(!rec||tripHistoryState.simWriteBusy)return;
+ tripHistoryState.simCapture=null;
+ const secs=Math.max(0,Math.round((sim.simClock-rec.start_clock)/1000));
+ const dist=Math.max(0,sim.distance-rec.start_distance);
+ if(!secs&&dist<0.01)return;
+ tripHistoryState.simWriteBusy=true;
+ try{
+  await tripsRequest('/api/trips/record',{kind:'SIM',status,start_epoch:rec.start_epoch,end_epoch:Math.floor(Date.now()/1000),duration_s:secs,distance_km:dist,avg_kmh:secs>0?Math.min(140,dist*3600/secs):0,max_kmh:rec.max_kmh,stops:config.stops.length});
+  toast('Simulation trip saved in ESP32 flash');if(view==='history')await refreshTripHistory();
+ }catch(e){toast('Trip was not saved: '+e.message)}
+ finally{tripHistoryState.simWriteBusy=false}
+}
+function sourceData(){
+ if(!sim.active||!sim.loaded||!sim.route.length)return realData;
+ const p=pointAt(sim.distance),raw=realData||{};
+ return {...raw,gps:{valid:true,lat:p[0],lon:p[1],age_ms:0,satellites:null,speed_kmh:sim.playing?sim.speed:0,avg_speed_kmh:sim.speed,heading_deg:null,hdop:null}};
+}
+function pointAt(distance){const a=sim.cumulative,p=sim.route;if(!p.length)return [0,0];if(distance<=0)return p[0];if(distance>=sim.total)return p[p.length-1];let l=1,r=a.length-1;while(l<r){const mid=(l+r)>>1;if(a[mid]<distance)l=mid+1;else r=mid}const i=l;const span=a[i]-a[i-1],t=span>0?(distance-a[i-1])/span:0;return [p[i-1][0]+(p[i][0]-p[i-1][0])*t,p[i-1][1]+(p[i][1]-p[i-1][1])*t]}
+function simAdvanceIndex(){sim.nextIndex=sim.stopsAt.findIndex((d,i)=>i>0&&d>sim.distance+0.005);if(sim.nextIndex<0)sim.nextIndex=config.stops.length;sim.finished=sim.distance>=sim.total-0.00001;if(sim.finished)sim.playing=false;}
+function simArrivals(){const speed=Math.max(1,sim.speed),now=sim.simClock;return config.stops.map((s,i)=>{const remaining=sim.stopsAt[i]-sim.distance,passed=i===0||remaining<=0.005;const eta=passed?null:Math.max(1,Math.ceil(remaining/speed*60));return {name:s.name,index:i,passed,eta,km:passed?null:remaining.toFixed(2),fallback:false,arrivalTime:eta==null?'':new Date(now+eta*60000).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}})}
+function updateSimTelemetry(){
+ if(!sim.active)return;
+ const running=sim.playing&&!sim.finished;
+ text('sim-pill',sim.finished?'ARRIVED':running?'BUS MOVING':'PAUSED');
+ text('sim-route-type',sim.mode==='road'?'ROAD ROUTE':'STRAIGHT-LINE FALLBACK');
+ text('sim-speed-label',sim.speed+' km/h');text('sim-mult-label',sim.mult+'×');
+ text('sim-current',sim.finished?'Route completed':running?'Bus moving • simulated':'Paused • simulated');
+ text('sim-distance',sim.distance.toFixed(2)+' / '+sim.total.toFixed(2)+' km');
+ $('sim-progress').style.width=(sim.total?Math.min(100,sim.distance/sim.total*100):0)+'%';
+ const next=config.stops[sim.nextIndex];text('sim-next',next?next.name:'Final stop reached');
+ text('sim-next-eta',next?simArrivals()[sim.nextIndex].eta+' simulated travel minutes remaining':'Journey complete');
+ text('sim-clock',new Date(sim.simClock).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}));
+ text('sim-explanation',sim.mode==='road'?'Road-following route loaded. Bus position moves along road geometry. Arrival times are approximate and do not include real traffic.':'Routing unavailable. Moving in straight segments between configured stops (demonstration fallback).');
+ text('sim-route-note',sim.mode==='road'?'Route follows road geometry (routing service)':'Direct stop-to-stop simulation — no road geometry available');
+ $('sim-play').textContent=sim.finished?'✓ Finished':running?'Ⅱ Pause':'▶ '+(sim.distance>0?'Resume':'Start');
+ $('sim-play').disabled=sim.finished;
+}
+function processSimTick(){if(!sim.active)return;const now=performance.now(),delta=sim.lastTick?Math.min(2,(now-sim.lastTick)/1000):0;sim.lastTick=now;if(sim.playing){let advance=sim.speed*sim.mult*delta/3600;sim.distance=Math.min(sim.total,sim.distance+advance);sim.simClock+=delta*sim.mult*1000;simAdvanceIndex();if(sim.finished)finishSimTripCapture('COMPLETED')}updateSimTelemetry();redraw()}
+function loadGeometry(points){if(points.length<2)throw Error('Need at least 2 route points');sim.route=points;sim.cumulative=[0];for(let i=1;i<points.length;i++)sim.cumulative.push(sim.cumulative[i-1]+km({lat:points[i-1][0],lon:points[i-1][1]},{lat:points[i][0],lon:points[i][1]}));sim.total=sim.cumulative.at(-1);if(!(sim.total>0.01))throw Error('Stops too close together');sim.distance=0;sim.playing=false;sim.active=true;sim.loaded=true;sim.finished=false;sim.nextIndex=1;sim.simClock=Date.now();sim.lastTick=performance.now();sim.version++;sim.stopsAt=[0];}
+async function buildSimulation(){
+ if(sim.loading)return;
+ const stops=config.stops||[];
+ if(stops.length<2){toast('Save at least two bus stops in Route Setup first');setView('settings');return}
+ if(stops.some(s=>!Number.isFinite(Number(s.lat))||!Number.isFinite(Number(s.lon)))){toast('Check stop coordinates');return}
+ sim.loading=true;$('sim-build').disabled=true;$('sim-build').textContent='Loading road route...';
+ try{
+  let points=null,legs=null,road=false;
+  const coords=stops.map(s=>Number(s.lon)+','+Number(s.lat)).join(';');
+  const ctl=new AbortController();const timeout=setTimeout(()=>ctl.abort(),9000);
+  try{const response=await fetch('https://router.project-osrm.org/route/v1/driving/'+coords+'?overview=full&geometries=geojson&steps=false',{signal:ctl.signal});if(!response.ok)throw Error('Routing HTTP '+response.status);const json=await response.json();if(json.code!=='Ok'||!json.routes?.length)throw Error('No driving route');const route=json.routes[0];points=route.geometry.coordinates.map(p=>[p[1],p[0]]);legs=route.legs.map(l=>l.distance/1000);road=true}catch(e){toast('Road service unavailable — using direct stop segments')}
+  finally{clearTimeout(timeout)}
+  if(!points){points=stops.map(s=>[Number(s.lat),Number(s.lon)]);legs=[];for(let i=1;i<points.length;i++)legs.push(km({lat:points[i-1][0],lon:points[i-1][1]},{lat:points[i][0],lon:points[i][1]}))}
+  // Reduce long routes to limit map redraw work on mobile browsers.
+  if(points.length>650){const old=points;points=[];const step=Math.ceil((old.length-1)/649);for(let i=0;i<old.length;i+=step)points.push(old[i]);if(points.at(-1)!==old.at(-1))points.push(old.at(-1))}
+  loadGeometry(points);
+  const sumLegs=legs.reduce((a,b)=>a+b,0),scale=sumLegs>0?sim.total/sumLegs:1;let acc=0;
+  for(const length of legs){acc+=length*scale;sim.stopsAt.push(Math.min(sim.total,acc))}
+  sim.stopsAt[sim.stopsAt.length-1]=sim.total;
+  sim.mode=road?'road':'fallback';trail=[];speedSamples=[];mapCentered=false;
+  for(const id of ['map-main','map-large','map-simulator']){if(pathLines[id]){maps[id]?.removeLayer(pathLines[id]);pathLines[id]=null}}
+  $('sim-play').disabled=false;$('sim-reset').disabled=false;$('sim-exit').disabled=false;
+  toast(road?'Road-following route loaded. Press Start.':'Direct segment route loaded. Press Start.');
+  updateSimTelemetry();redraw();
+  if(maps['map-simulator']){maps['map-simulator'].fitBounds(sim.route,{padding:[35,35],maxZoom:13});}
+ }catch(e){sim.active=false;sim.loaded=false;toast('Simulator: '+e.message)}
+ finally{sim.loading=false;$('sim-build').disabled=false;$('sim-build').textContent='↻ Reload Route'}
+}
+function exitSimulation(){finishSimTripCapture('STOPPED');syncLCDMirror(true);sim.active=false;sim.playing=false;sim.loaded=false;sim.mode='none';for(const id of ['map-main','map-large','map-simulator']){if(maps[id])maps[id].__routeVersion='';} $('sim-play').disabled=true;$('sim-reset').disabled=true;$('sim-exit').disabled=true;text('sim-pill','SIM OFF');text('sim-route-type','NO ROUTE');trail=[];speedSamples=[];mapCentered=false;redraw();toast('Returned to actual hardware GPS')}
+function computeArrivals(){if(sim.active&&sim.loaded)return simArrivals();const stops=config.stops||[];if(!stops.length)return[];const next=Math.min(stops.length,Math.max(0,Number(config.next_stop_index)||0));const gps=hasFix()?{lat:realData.gps.lat,lon:realData.gps.lon}:null;const average=Number(realData?.gps?.avg_speed_kmh)||0;const measured=average>=2;const speed=measured?average:Number(config.default_speed_kmh)||25;let dist=0;const result=[];for(let i=0;i<stops.length;i++){if(i<next){result.push({name:stops[i].name,index:i,passed:true,eta:null,km:null});continue}if(!gps){result.push({name:stops[i].name,index:i,passed:false,eta:null,km:null});continue}if(i===next)dist=km(gps,stops[i]);else dist+=km(stops[i-1],stops[i]);const eta=Math.max(0,Math.ceil(dist/Math.max(1,speed)*60));result.push({name:stops[i].name,index:i,passed:false,eta,km:dist.toFixed(2),fallback:!measured,arrivalTime:new Date(Date.now()+eta*60000).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})})}return result}
+function stopMarkup(rows){if(!rows.length)return'<div class="empty">No stops configured yet. Open <strong>Route Setup</strong>, add at least two stops in driving order, then start the simulator.</div>';const nextIndex=sim.active?sim.nextIndex:Number(config.next_stop_index);return rows.map(r=>'<div class="stop '+(!r.passed&&r.index===nextIndex?'next':'')+'"><span class="step">'+(r.passed?'✓':r.index+1)+'</span><div style="min-width:0;flex:1"><div class="stop-title">'+escapeHTML(r.name)+'</div><div class="stop-sub">'+(r.passed?'Passed / departure point':r.km==null?'Waiting for GPS or simulation':r.km+' km remaining • '+(sim.active?'SIMULATED':r.fallback?'Assumed speed':'GPS speed'))+(r.arrivalTime?'<br>Expected arrival: '+escapeHTML(r.arrivalTime)+(sim.active?' (virtual clock)':''):'')+'</div></div><div class="stop-eta">'+(r.passed?'—':r.eta==null?'--':r.eta+' min')+'<small>'+(r.passed?'PASSED':r.index===nextIndex?'NEXT STOP':'ARRIVAL')+'</small></div></div>').join('')}
+function escapeHTML(str){return String(str).replace(/[&<>"']/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]))}
+function redraw(){
+ const shown=sourceData(),physical=realData||{},gps=shown?.gps||{},realGPS=physical.gps||{};
+ const live=hasFix(),online=DEMO||Date.now()-lastSuccessfulFetch<11000;
+ const label=sim.active?(sim.finished?'SIM ARRIVED':sim.playing?'SIMULATION':'SIM PAUSED'):!online?'OFFLINE':live?'LIVE':'GPS SEARCH';
+ displayStatus(label);text('mode-indicator',sim.active?'⚠ SIMULATED DATA':'REAL GPS');
+ $('mode-indicator').className='pill '+(sim.active?'yellow':'green');
+ const rows=computeArrivals(),next=rows.find(r=>!r.passed);
+ text('hero-route',config.route_name||'New Route');text('hero-bus-id',config.bus_id||'BUS001');
+ text('hero-note',sim.active?'DEMONSTRATION ONLY — GPS position and speed are simulated':live?'Position and tracking metrics from the hardware GPS':'GPS acquisition in progress');
+ text('speed-value',gps.speed_kmh==null?'--':Number(gps.speed_kmh).toFixed(1));
+ text('speed-note',sim.active?(sim.playing?'Simulated speed':'Simulation paused — 0 km/h'):live?'Real GPS speed':'Waiting for GPS');
+ text('eta-value',next?.eta??'--');text('eta-unit',next?.eta!=null?'min':'');
+ text('eta-note',next?(sim.active?'Simulation ETA • ':next.fallback?'Assumed speed • ':'GPS speed • ')+next.name:sim.active&&sim.finished?'Route completed':'Add stops or reset next-stop index');
+ text('sat-value',sim.active?'SIM':gps.satellites??'--');text('sat-note',sim.active?'Virtual journey (not GPS satellites)':live?'GPS receiver connected':'Awaiting GPS fix');
+ text('fix-value',sim.active?'SIMULATED':live?'FIX VALID':'NO FIX');
+ $('fix-value').style.color=sim.active?'var(--yellow)':live?'var(--green)':'var(--yellow)';
+ text('fix-note',sim.active?'Virtual GPS • college demonstration':live?'Age: '+(Number(gps.age_ms||0)/1000).toFixed(1)+'s':'Coordinates unavailable');
+ text('coord-text',live?Number(gps.lat).toFixed(6)+', '+Number(gps.lon).toFixed(6)+(sim.active?' (SIM)':''):'LAT -- • LON --');
+ text('map-live-coords',live?(sim.active?'SIMULATED':'GPS')+': '+Number(gps.lat).toFixed(6)+', '+Number(gps.lon).toFixed(6):'GPS waiting...');
+ text('map-refresh',sim.active?'SIMULATION / not live GPS':online?'Auto refresh • 2.5s':'Device disconnected');
+ text('map-badge',sim.active?'SIMULATED ROUTE':'GPS MAP');
+ text('route-name',config.route_name||'New Route');text('upcoming-count',rows.filter(r=>!r.passed).length+' STOPS');
+ const nextIndex=sim.active?sim.nextIndex:Number(config.next_stop_index)||0;
+ $('stops-mini').innerHTML=stopMarkup(rows.slice(Math.max(0,nextIndex)));
+ $('stops-all').innerHTML=stopMarkup(rows);
+ text('avg-speed',sim.active?'Configured demo speed: '+sim.speed+' km/h':gps.avg_speed_kmh==null?'Average speed: --':'Average speed: '+Number(gps.avg_speed_kmh).toFixed(1)+' km/h');
+ text('snap-age',sim.active?'Simulation':gps.age_ms==null?'--':(Number(gps.age_ms)/1000).toFixed(1)+' seconds');
+ text('snap-rssi',physical.wifi?.connected?physical.wifi.rssi+' dBm':'Wi-Fi offline');
+ text('snap-coords',live?Number(gps.lat).toFixed(5)+', '+Number(gps.lon).toFixed(5):'--');
+ text('snap-next',next?.name||'No remaining stops');text('eta-route-name',config.route_name||'Scheduled Stops & ETA');
+ // Always present actual hardware readings in Device Health, not virtual GPS.
+ text('dev-fix',realGPS.valid?'VALID':'NO VALID FIX');text('dev-sat',realGPS.satellites??'--');
+ text('dev-lat',realGPS.valid&&realGPS.lat!=null?Number(realGPS.lat).toFixed(6):'--');
+ text('dev-lon',realGPS.valid&&realGPS.lon!=null?Number(realGPS.lon).toFixed(6):'--');
+ text('dev-heading',realGPS.heading_deg==null?'--':Number(realGPS.heading_deg).toFixed(1)+'°');
+ text('dev-hdop',realGPS.hdop==null?'--':Number(realGPS.hdop).toFixed(2));
+ text('dev-wifi',physical.wifi?.connected?'CONNECTED':'DISCONNECTED');text('dev-ip',physical.wifi?.ip||'--');
+ text('dev-ap',physical.wifi?.ap_ip||'192.168.4.1');text('dev-rssi',physical.wifi?.connected?physical.wifi.rssi+' dBm':'--');
+ text('dev-uptime',fmtSec(Number(physical.uptime_s)));text('dev-heap',physical.free_heap_bytes?Math.round(physical.free_heap_bytes/1024)+' KB':'--');
+ text('side-ip',physical.wifi?.connected?physical.wifi.ip+' • STA':'192.168.4.1 • AP');
+ text('health-pill',realGPS.valid?'REAL GPS VALID':'REAL GPS SEARCH');
+ renderMap();drawChart();
+}
+function initMap(container){if(typeof L==='undefined'){const el=$(container);if(el)el.innerHTML='<div class="map-blank"><strong>Map tiles not available</strong><br><br>Connect your phone/computer to the internet to load Leaflet and OpenStreetMap.<br>GPS coordinates and ETA still work locally.</div>';return null}const el=$(container);if(!el)return null;el.innerHTML='';const m=L.map(container,{zoomControl:true,scrollWheelZoom:true}).setView([12.971600,77.594600],14);L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{attribution:'&copy; OpenStreetMap contributors',maxZoom:19}).addTo(m);m.on('click',function(e){if(!nextPick)return;nextPick=false;const last=editStops[editStops.length-1];if(!last){toast('Add an empty stop before picking a location');return}last.lat=Number(e.latlng.lat.toFixed(6));last.lon=Number(e.latlng.lng.toFixed(6));renderEditor();setView('settings');toast('Coordinates selected — name the stop and save settings')});maps[container]=m;setTimeout(()=>m.invalidateSize(),150);return m}
+function updateOneMap(id){
+ const m=maps[id];if(!m||!hasFix())return;
+ const shown=sourceData(),loc=[shown.gps.lat,shown.gps.lon],simulated=sim.active&&sim.loaded;
+ if(!markers[id]){const ico=L.divIcon({className:'',html:'<div class="bus-marker"></div>',iconSize:[23,23],iconAnchor:[11,11]});markers[id]=L.marker(loc,{icon:ico}).addTo(m);m.setView(loc,15)}else markers[id].setLatLng(loc);
+ markers[id].setPopupContent('<strong>'+escapeHTML(config.bus_id)+'</strong><br>'+ (simulated?'SIMULATION / NOT REAL GPS<br>':'GPS position<br>')+Number(loc[0]).toFixed(6)+', '+Number(loc[1]).toFixed(6));
+ const version=simulated?'sim'+sim.version+':'+sim.nextIndex:'real'+(Number(config.next_stop_index)||0);
+ if(!simulated||m.__routeVersion!==version){
+  if(pathLines[id])m.removeLayer(pathLines[id]);
+  const forward=config.stops.slice(Math.min(config.stops.length,Math.max(0,Number(config.next_stop_index)||0)));
+  const points=simulated?sim.route:[loc,...forward.map(s=>[s.lat,s.lon])];
+  if(points.length>1)pathLines[id]=L.polyline(points,{color:'#56bcff',weight:4,dashArray:simulated&&sim.mode==='road'?null:'9 9',opacity:.85}).addTo(m);
+  m.__routeVersion=version;
+  if(!m.__stopMarkers)m.__stopMarkers=[];
+  m.__stopMarkers.forEach(s=>m.removeLayer(s));m.__stopMarkers=[];
+  config.stops.forEach((s,i)=>{const pin=L.circleMarker([s.lat,s.lon],{radius:7,color:'#dff7ff',fillColor:i===(simulated?sim.nextIndex:config.next_stop_index)?'#249bff':'#406b88',fillOpacity:1,weight:2}).addTo(m).bindPopup('<strong>'+escapeHTML(s.name)+'</strong><br>Stop '+(i+1));m.__stopMarkers.push(pin)});
+ }
+ if(trailLines[id])m.removeLayer(trailLines[id]);if(trail.length>1)trailLines[id]=L.polyline(trail,{color:'#4de1b6',weight:3,opacity:.65}).addTo(m);
+ if(!mapCentered){mapCentered=true;if(simulated&&id==='map-simulator')m.fitBounds(sim.route,{padding:[35,35],maxZoom:13});else m.setView(loc,15)}
+}
+function renderOfflineSimulator(){
+ if(maps['map-simulator']||!sim.active||!sim.loaded)return;
+ const el=$('map-simulator'),points=sim.route;
+ const xs=points.map(p=>p[1]),ys=points.map(p=>p[0]);
+ const minX=Math.min(...xs),maxX=Math.max(...xs),minY=Math.min(...ys),maxY=Math.max(...ys);
+ const rangeX=Math.max(.0001,maxX-minX),rangeY=Math.max(.0001,maxY-minY);
+ const proj=p=>[36+(p[1]-minX)/rangeX*528,326-(p[0]-minY)/rangeY*290];
+ const line=points.map((p,i)=>{const q=proj(p);return(i?'L':'M')+q[0].toFixed(1)+' '+q[1].toFixed(1)}).join(' ');
+ const bus=proj(pointAt(sim.distance));
+ const dots=config.stops.map((p,i)=>{const xy=proj([p.lat,p.lon]);return '<circle cx="'+xy[0]+'" cy="'+xy[1]+'" r="7" fill="#4de1b6" stroke="white" stroke-width="2"/><text x="'+(xy[0]+11)+'" y="'+(xy[1]-10)+'" fill="#ffffff" font-size="11">'+escapeHTML(p.name)+'</text>'}).join('');
+ el.innerHTML='<div style="position:absolute;top:12px;left:12px;z-index:1;color:#ffda9b;font-size:11px;background:#15273bee;padding:7px 10px;border-radius:8px">OFFLINE SCHEMATIC • NOT A ROAD MAP</div><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 360" width="100%" height="100%" preserveAspectRatio="xMidYMid meet"><rect width="600" height="360" fill="#102238"/><path d="'+line+'" fill="none" stroke="#55a7ff" stroke-width="4" stroke-linejoin="round"/>'+dots+'<circle cx="'+bus[0]+'" cy="'+bus[1]+'" r="16" fill="#1694ed" stroke="#b8e9ff" stroke-width="3"/><text x="'+bus[0]+'" y="'+(bus[1]+5)+'" text-anchor="middle" fill="white" font-size="16">🚌</text></svg>';
+}
+function renderMap(){updateOneMap('map-main');updateOneMap('map-large');updateOneMap('map-simulator');renderOfflineSimulator()}
+function drawChart(){const p=$('chart-line');if(!speedSamples.length){p.setAttribute('points','');return}const max=Math.max(15,...speedSamples.map(v=>v.v))*1.1;let pts=speedSamples.map((item,i)=>`${(i/Math.max(1,speedSamples.length-1)*550).toFixed(1)},${(102-item.v/max*88).toFixed(1)}`).join(' ');p.setAttribute('points',pts)}
+function collectHistory(){if(!hasFix())return;const d=sourceData(),loc=[d.gps.lat,d.gps.lon];const last=trail[trail.length-1];if(!last||km({lat:last[0],lon:last[1]},{lat:loc[0],lon:loc[1]})>.006){trail.push(loc);if(trail.length>70)trail.shift()}const v=Math.max(0,Number(d.gps.speed_kmh)||0);speedSamples.push({v});if(speedSamples.length>26)speedSamples.shift()}
+async function getJSON(url){const response=await fetch(url,{cache:'no-store'});if(!response.ok)throw Error('HTTP '+response.status);return response.json()}
+async function fetchConfig(){if(DEMO){config=structuredClone(demoSettings);editStops=structuredClone(config.stops);populateEditor();return}const settings=await getJSON('/api/config');config=settings;editStops=structuredClone(config.stops||[]);populateEditor()}
+async function poll(){if(DEMO){realData={bus_id:'BUS001',route_name:config.route_name,uptime_s:4835,free_heap_bytes:153600,wifi:{connected:true,ip:'192.168.1.100',ap_ip:'192.168.4.1',rssi:-56},gps:{valid:true,lat:12.971600,lon:77.594600,age_ms:420,satellites:19,speed_kmh:0,avg_speed_kmh:0,heading_deg:null,hdop:1.14}};lastSuccessfulFetch=Date.now();collectHistory();redraw();return}try{realData=await getJSON('/api/live');lastSuccessfulFetch=Date.now();if(!sim.active&&Number.isFinite(Number(realData?.next_stop_index))&&Number(realData.next_stop_index)!==Number(config.next_stop_index)){config.next_stop_index=Number(realData.next_stop_index);if(view!=='settings')$('cfg-next').value=config.next_stop_index}collectHistory();redraw()}catch(e){redraw()}}
+function setView(page){view=page;$$('.nav').forEach(n=>n.classList.toggle('active',n.dataset.page===page));$$('.view').forEach(v=>v.classList.toggle('active',v.id==='view-'+page));const names={overview:'Smart Bus Dashboard',map:'Live GPS Tracking',simulator:'Virtual Bus Simulator',stops:'Stops & Arrival Predictions',device:'Device Health',history:'Trip History',settings:'Route Configuration'};text('page-title',names[page]||names.overview);text('page-desc',page==='simulator'?'Simulated movement, speed and stop arrival times — not real GPS.':page==='settings'?'Securely edit route and stop data stored on ESP32.':'Location intelligence and arrival forecasts from your ESP32.');if(page==='map'&&maps['map-large'])setTimeout(()=>maps['map-large'].invalidateSize(),150);if(page==='overview'&&maps['map-main'])setTimeout(()=>maps['map-main'].invalidateSize(),150);if(page==='simulator'&&maps['map-simulator'])setTimeout(()=>maps['map-simulator'].invalidateSize(),150);if(page==='history')refreshTripHistory()}
+function populateEditor(){text('cfg-id',config.bus_id);$('cfg-id').value=config.bus_id||'BUS001';$('cfg-route').value=config.route_name||'New Route';$('cfg-speed').value=config.default_speed_kmh||25;$('cfg-next').value=config.next_stop_index||0;renderEditor()}
+function renderEditor(){text('editor-count',editStops.length+' STOPS');$('editor-stops').innerHTML=editStops.length?editStops.map((s,i)=>`<div class="edit-stop" data-idx="${i}"><input aria-label="Stop name" data-k="name" value="${escapeHTML(s.name)}" placeholder="Stop ${i+1} name" maxlength="44"><input aria-label="Latitude" type="number" step="any" data-k="lat" value="${s.lat==null?'':Number(s.lat)}" placeholder="Latitude"><input aria-label="Longitude" type="number" step="any" data-k="lon" value="${s.lon==null?'':Number(s.lon)}" placeholder="Longitude"><button class="button danger" data-remove="${i}" aria-label="Remove stop">✕</button></div>`).join(''):'<div class="empty">No stops yet. Press <strong>+ Add stop</strong> to create your first stop.</div>';$$('#editor-stops input').forEach(el=>el.addEventListener('input',()=>{const i=Number(el.closest('.edit-stop').dataset.idx);editStops[i][el.dataset.k]=el.dataset.k==='name'?el.value:(el.value===''?null:Number(el.value))}));$$('[data-remove]').forEach(el=>el.addEventListener('click',()=>{editStops.splice(Number(el.dataset.remove),1);renderEditor()}));}
+async function saveSettings(){const payload={bus_id:$('cfg-id').value.trim(),route_name:$('cfg-route').value.trim(),default_speed_kmh:Number($('cfg-speed').value),next_stop_index:Number($('cfg-next').value),stops:editStops.map(s=>({name:s.name.trim(),lat:s.lat==null?null:Number(s.lat),lon:s.lon==null?null:Number(s.lon)}))};if(!payload.bus_id||!payload.route_name)return toast('Enter bus ID and route name');if(payload.stops.length>12)return toast('Maximum 12 stops');if(!Number.isInteger(payload.next_stop_index)||payload.next_stop_index<0||payload.next_stop_index>payload.stops.length)return toast('Next stop index must be between 0 and the stop count');if(payload.stops.some(s=>!s.name||s.lat==null||s.lon==null||Math.abs(s.lat)>90||Math.abs(s.lon)>180||!Number.isFinite(s.lat)||!Number.isFinite(s.lon)))return toast('Please check each stop name and coordinates');if(!(payload.default_speed_kmh>=5&&payload.default_speed_kmh<=80))return toast('Fallback speed must be 5–80 km/h');if(DEMO){config=payload;toast('Demo only — settings cannot be saved from local preview');redraw();return}const pass=$('cfg-admin').value;if(!pass)return toast('Enter the admin password to save');const button=$('btn-save');button.disabled=true;try{const r=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json','X-Admin-Key':pass},body:JSON.stringify(payload)});const json=await r.json();if(!r.ok)throw Error(json.error||'Save failed');if(sim.active)exitSimulation();config=payload;$('cfg-admin').value='';toast('Route settings saved to ESP32');await fetchConfig();redraw()}catch(e){toast('Could not save: '+e.message)}finally{button.disabled=false}}
+$$('[data-page]').forEach(el=>el.addEventListener('click',()=>setView(el.dataset.page)));$$('[data-go]').forEach(el=>el.addEventListener('click',()=>setView(el.dataset.go)));$('btn-center-map').onclick=()=>{if(!hasFix())return toast('Waiting for GPS');maps['map-large']?.setView([sourceData().gps.lat,sourceData().gps.lon],16)};$('btn-add-stop').onclick=()=>{if(editStops.length>=12)return toast('Maximum 12 stops');editStops.push({name:'',lat:null,lon:null});renderEditor();toast('Enter name and coordinates for the new stop')};$('btn-current-pos').onclick=()=>{if(!realData?.gps?.valid)return toast('No valid physical GPS fix yet');if(!editStops.length)editStops.push({name:'',lat:null,lon:null});editStops[editStops.length-1].lat=Number(realData.gps.lat.toFixed(6));editStops[editStops.length-1].lon=Number(realData.gps.lon.toFixed(6));renderEditor();toast('Current GPS coordinates copied to last stop')};$('btn-map-pick').onclick=()=>{if(!editStops.length)return toast('Add a stop first');if(typeof L==='undefined')return toast('Map needs internet to load Leaflet');nextPick=true;setView('map');toast('Click the location of your last stop on the map')};$('btn-save').onclick=saveSettings;$('btn-reload').onclick=async()=>{try{await fetchConfig();toast('Restored saved route settings')}catch(e){toast('Unable to reload settings')}};
+$('sim-build').onclick=buildSimulation;
+$('sim-play').onclick=()=>{if(!sim.active||!sim.loaded)return;if(sim.finished)return toast('Journey completed — press Reset');if(!sim.playing)beginSimTripCapture();sim.playing=!sim.playing;sim.lastTick=performance.now();updateSimTelemetry();toast(sim.playing?'Simulation running':'Simulation paused')};
+$('sim-reset').onclick=()=>{if(!sim.loaded)return;finishSimTripCapture('STOPPED');sim.distance=0;sim.playing=false;sim.finished=false;sim.nextIndex=1;sim.simClock=Date.now();sim.lastTick=performance.now();trail=[];speedSamples=[];updateSimTelemetry();redraw();toast('Virtual bus returned to departure stop')};
+$('sim-exit').onclick=exitSimulation;
+$('sim-speed').oninput=e=>{sim.speed=Number(e.target.value);if(tripHistoryState.simCapture)tripHistoryState.simCapture.max_kmh=Math.max(tripHistoryState.simCapture.max_kmh,sim.speed);text('sim-speed-label',sim.speed+' km/h');if(sim.active){updateSimTelemetry();redraw()}};
+$('sim-mult').onchange=e=>{sim.mult=Number(e.target.value);text('sim-mult-label',sim.mult+'×')};
+setInterval(()=>{if(sim.active){if(sim.playing&&!tripHistoryState.simCapture&&!tripHistoryState.simWriteBusy&&tripPassword())beginSimTripCapture();processSimTick();if(sim.playing)collectHistory()}},500);
+let lcdMirrorBusy=false;
+let lcdMirrorSynced=false;
+async function syncLCDMirror(forceOff=false){
+ if(DEMO||lcdMirrorBusy)return;
+ const key=$('sim-lcd-key').value;
+ if(!key){text('sim-lcd-status','LCD shows real GPS. Enter administrator password to mirror the simulated trip.');return;}
+ const active=sim.active&&sim.loaded&&!forceOff;
+ const next=active?config.stops[sim.nextIndex]:null;
+ const rem=next?Math.max(0,sim.stopsAt[sim.nextIndex]-sim.distance):0;
+ const eta=next?Math.max(0,Math.ceil(rem/Math.max(1,sim.speed)*60)):0;
+ const pos=active?pointAt(sim.distance):[0,0];
+ const payload={active,playing:sim.playing,finished:sim.finished,
+  speed_kmh:active&&sim.playing?sim.speed:0,planned_speed_kmh:sim.speed,
+  mult:sim.mult,eta_min:eta,remaining_km:rem,progress_pct:sim.total?100*sim.distance/sim.total:0,
+  next_stop:next?next.name:'Destination',lat:pos[0],lon:pos[1],
+  sim_time:active?new Date(sim.simClock).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',hour12:false}):'--:--'};
+ lcdMirrorBusy=true;
+ try{
+  const response=await fetch('/api/lcd-sim',{method:'POST',
+   headers:{'Content-Type':'application/json','X-Admin-Key':key},
+   body:JSON.stringify(payload),cache:'no-store'});
+  if(!response.ok)throw new Error(response.status===401?'Incorrect admin password':'HTTP '+response.status);
+  lcdMirrorSynced=active;
+  text('sim-lcd-status',active?'LCD MIRROR ON • SIM-labeled values update about every 1.5 seconds':'LCD MIRROR OFF • real GPS displayed');
+ }catch(e){lcdMirrorSynced=false;text('sim-lcd-status','LCD mirror unavailable: '+e.message)}
+ finally{lcdMirrorBusy=false}
+}
+$('sim-lcd-key').addEventListener('input',()=>{if(!$('sim-lcd-key').value)text('sim-lcd-status','No LCD mirror password. ESP32 automatically returns to real GPS.');});
+setInterval(()=>{if(sim.active||lcdMirrorSynced)syncLCDMirror()},1500);
+$('history-start-gps').onclick=startGPSTrip;
+$('history-stop-gps').onclick=stopGPSTrip;
+$('history-refresh').onclick=refreshTripHistory;
+$('history-clear').onclick=clearAllTrips;
+function tickClock(){text('clock-pill',new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'}))}tickClock();setInterval(tickClock,1000);if(DEMO)$('demo-warning').classList.add('visible');
+(async()=>{try{await fetchConfig()}catch(e){toast('Could not load settings: '+e.message)}initMap('map-main');initMap('map-large');initMap('map-simulator');await poll();await refreshTripHistory();setInterval(poll,2500)})();
+</script>
+</body></html>
+
+)__SMARTBUS__";
+
+
+// ---------- CHANGE THESE BEFORE UPLOADING ----------
+const char* WIFI_SSID = "V8";
+const char* WIFI_PASSWORD = "eshwar46";
+
+// ESP32 also creates its own hotspot as a backup (192.168.4.1).
+// Change both AP password and admin password for your own project.
+const char* AP_SSID = "SmartBus-Local";
+const char* AP_PASSWORD = "eshwarbus";  // at least 8 characters
+const char* ADMIN_PASSWORD = "tunder";
+// ---------------------------------------------------
+
+static const uint8_t GPS_RX_PIN = 16;
+static const uint8_t GPS_TX_PIN = 17; // left unconnected if GPS RX unused
+static const uint8_t LCD_SDA_PIN = 21;
+static const uint8_t LCD_SCL_PIN = 22;
+static const uint8_t LCD_ADDRESS = 0x27;
+static const size_t MAX_STOPS = 12;
+
+TinyGPSPlus gps;
+HardwareSerial gpsSerial(2);
+LiquidCrystal_I2C lcd(LCD_ADDRESS, 16, 2);
+WebServer server(80);
+Preferences preferences;
+Preferences tripPreferences; // Separate NVS namespace; route settings are never cleared with trip history.
+
+struct Stop {
+  String name;
+  double lat;
+  double lon;
+};
+
+String busId = "BUS001";
+String routeName = "Configure your college route";
+Stop stops[MAX_STOPS];
+size_t stopCount = 0;
+size_t nextStopIndex = 0;
+float defaultSpeedKmh = 25.0f;
+
+unsigned long lastLCDUpdate = 0;
+unsigned long lastLCDSwitch = 0;
+unsigned long lastSerial = 0;
+unsigned long lastWiFiRetry = 0;
+unsigned long lastSpeedSample = 0;
+unsigned long arrivalStart = 0;
+int lcdPage = 0;
+bool previousWiFiState = false;
+bool dashboardBrowserOpened = false;  // Reset on each ESP32 reboot.
+unsigned long lastLcdPageTick = 0;
+bool simLCDActive = false;
+unsigned long simLCDLastSeen = 0;
+bool simLCDPlaying = false;
+bool simLCDFinished = false;
+float simLCDSpeed = 0.0f;
+float simLCDPlannedSpeed = 40.0f;
+float simLCDRemaining = 0.0f;
+float simLCDProgress = 0.0f;
+int simLCDEta = 0;
+int simLCDMultiplier = 1;
+double simLCDLat = 0;
+double simLCDLon = 0;
+String simLCDNextStop = "";
+String simLCDTime = "--:--";
+String previousLcdLine[2] = {"", ""};
+
+float speedRing[10] = {};
+int speedCount = 0;
+int speedWrite = 0;
+float meanSpeedKmh = 0;
+
+bool gpsFixFresh() {
+  return gps.location.isValid() && gps.location.age() < 5000;
+}
+
+void writeLCDLine(uint8_t row, String message) {
+  if (row > 1) return;
+  String cleaned;
+  cleaned.reserve(16);
+  for (size_t i = 0; i < message.length() && cleaned.length() < 16; i++) {
+    unsigned char c = (unsigned char)message[i];
+    if (c >= 32 && c <= 126) cleaned += (char)c;
+    else if (c < 128) cleaned += ' ';
+    // Ignore non-ASCII UTF-8 bytes: common 16x2 LCD cannot display them.
+  }
+  while (cleaned.length() < 16) cleaned += ' ';
+  if (previousLcdLine[row] == cleaned) return;
+  previousLcdLine[row] = cleaned;
+  lcd.setCursor(0, row);
+  lcd.print(cleaned);
+}
+
+bool simulatorOnLCD(unsigned long now) {
+  return simLCDActive && (unsigned long)(now - simLCDLastSeen) < 6500UL;
+}
+
+String currentWebIP() {
+  if (WiFi.status() == WL_CONNECTED) return WiFi.localIP().toString();
+  return WiFi.softAPIP().toString();
+}
+
+void loadConfiguration() {
+  const String saved = preferences.getString("route", "");
+  if (saved.isEmpty()) return;
+
+  JsonDocument doc;
+  if (deserializeJson(doc, saved) != DeserializationError::Ok) {
+    Serial.println("Saved route invalid; using default route");
+    return;
+  }
+
+  busId = doc["bus_id"].as<String>();
+  routeName = doc["route_name"].as<String>();
+  if (busId.isEmpty()) busId = "BUS001";
+  if (routeName.isEmpty()) routeName = "Configure your college route";
+  defaultSpeedKmh = doc["default_speed_kmh"] | 25.0f;
+  if (defaultSpeedKmh < 5 || defaultSpeedKmh > 80) defaultSpeedKmh = 25;
+  stopCount = 0;
+  JsonArray arr = doc["stops"].as<JsonArray>();
+  if (!arr.isNull()) {
+    for (JsonVariant v : arr) {
+      if (stopCount >= MAX_STOPS) break;
+      String name = v["name"].as<String>();
+      double lat = v["lat"] | 0.0;
+      double lon = v["lon"] | 0.0;
+      if (name.isEmpty() || !isfinite(lat) || !isfinite(lon) || fabs(lat) > 90 || fabs(lon) > 180) continue;
+      stops[stopCount++] = {name, lat, lon};
+    }
+  }
+  int idx = doc["next_stop_index"] | 0;
+  nextStopIndex = (idx >= 0 && idx <= static_cast<int>(stopCount)) ? static_cast<size_t>(idx) : 0;
+}
+
+void makeConfigurationJSON(String& output) {
+  JsonDocument doc;
+  doc["bus_id"] = busId;
+  doc["route_name"] = routeName;
+  doc["default_speed_kmh"] = defaultSpeedKmh;
+  doc["next_stop_index"] = nextStopIndex;
+  JsonArray arr = doc["stops"].to<JsonArray>();
+  for (size_t i = 0; i < stopCount; i++) {
+    JsonObject item = arr.add<JsonObject>();
+    item["name"] = stops[i].name;
+    item["lat"] = stops[i].lat;
+    item["lon"] = stops[i].lon;
+  }
+  output = "";
+  serializeJson(doc, output);
+}
+
+void saveConfiguration() {
+  String value;
+  makeConfigurationJSON(value);
+  preferences.putString("route", value);
+}
+
+static double geoDistanceKm(double lat1, double lon1, double lat2, double lon2) {
+  const double rad = PI / 180.0;
+  double a = sin((lat2-lat1)*rad/2.0)*sin((lat2-lat1)*rad/2.0) +
+    cos(lat1*rad)*cos(lat2*rad)*sin((lon2-lon1)*rad/2.0)*sin((lon2-lon1)*rad/2.0);
+  a = fmax(0.0, fmin(1.0, a));
+  return 6371.0 * 2.0 * atan2(sqrt(a), sqrt(1.0-a));
+}
+
+// Bus stop advancement requires 8 continuous seconds within 80 metres.
+// This helps avoid rapid advances due to a single noisy GPS measurement.
+void updateNextStop(unsigned long now) {
+  if (!gpsFixFresh() || nextStopIndex >= stopCount) { arrivalStart = 0; return; }
+  const Stop& stop = stops[nextStopIndex];
+  double dKm = geoDistanceKm(gps.location.lat(), gps.location.lng(), stop.lat, stop.lon);
+  if (dKm <= 0.080) {
+    if (arrivalStart == 0) arrivalStart = now;
+    else if (now - arrivalStart >= 8000) {
+      nextStopIndex++;
+      arrivalStart = 0;
+      saveConfiguration();
+      Serial.printf("Next stop advanced to index %u\n", (unsigned)nextStopIndex);
+    }
+  } else arrivalStart = 0;
+}
+
+void updateSpeedAverage(unsigned long now) {
+  if (now - lastSpeedSample < 2000) return;
+  lastSpeedSample = now;
+  if (!gpsFixFresh() || !gps.speed.isValid() || gps.speed.age() > 5000) {
+    speedCount = 0;
+    speedWrite = 0;
+    meanSpeedKmh = 0;
+    return;
+  }
+  float speed = constrain((float)gps.speed.kmph(), 0.0f, 130.0f);
+  speedRing[speedWrite] = speed;
+  speedWrite = (speedWrite + 1) % 10;
+  if (speedCount < 10) speedCount++;
+  float total = 0;
+  for (int i = 0; i < speedCount; i++) total += speedRing[i];
+  meanSpeedKmh = total / speedCount;
+}
+
+void updateLCD(unsigned long now) {
+  const bool simulated = simulatorOnLCD(now);
+  if (now - lastLCDUpdate < 500UL) return;
+  lastLCDUpdate = now;
+
+  // Keep the IP visible until the dashboard is actually opened in a browser.
+  // Merely connecting a phone to Wi-Fi does NOT dismiss this screen.
+  if (!dashboardBrowserOpened) {
+    writeLCDLine(0, WiFi.status() == WL_CONNECTED ? "DASHBOARD IP:" : "HOTSPOT AP IP:");
+    writeLCDLine(1, currentWebIP());
+    return;
+  }
+
+  if (now - lastLcdPageTick >= 3500UL) {
+    lastLcdPageTick = now;
+    lcdPage = (lcdPage + 1) % 8;
+  }
+
+  const bool realFix = gpsFixFresh();
+  switch (lcdPage) {
+    case 0: // IP remains visible once per rotation
+      writeLCDLine(0, WiFi.status() == WL_CONNECTED ? "WEB DASHBOARD IP" : "HOTSPOT AP IP");
+      writeLCDLine(1, currentWebIP());
+      break;
+    case 1: // Current speed/status (SIM clearly different from real GPS)
+      if (simulated) {
+        writeLCDLine(0, simLCDFinished ? "SIM: ARRIVED" : simLCDPlaying ? "SIM: BUS MOVING" : "SIM: PAUSED");
+        writeLCDLine(1, "SPD:" + String(simLCDSpeed, 1) + " x" + String(simLCDMultiplier));
+      } else {
+        writeLCDLine(0, realFix ? "GPS FIX  SAT:" + String(gps.satellites.isValid()?gps.satellites.value():0) : "GPS WAITING...");
+        writeLCDLine(1, realFix && gps.speed.isValid() && gps.speed.age() < 5000 ? "SPD:" + String(gps.speed.kmph(),1) + " km/h" : "Searching signal");
+      }
+      break;
+    case 2: // Coordinates (real vs simulated labeled)
+      if (simulated) {
+        writeLCDLine(0, "S-LAT:" + String(simLCDLat, 6));
+        writeLCDLine(1, "S-LON:" + String(simLCDLon, 6));
+      } else if (realFix) {
+        writeLCDLine(0, "LAT:" + String(gps.location.lat(), 6));
+        writeLCDLine(1, "LON:" + String(gps.location.lng(), 6));
+      } else {
+        writeLCDLine(0, "GPS POSITION");
+        writeLCDLine(1, "No fresh GPS fix");
+      }
+      break;
+    case 3: // Configured bus and route
+      writeLCDLine(0, "BUS:" + busId);
+      writeLCDLine(1, "RTE:" + routeName);
+      break;
+    case 4: { // Next stop and ETA
+      String next = "NOT CONFIGURED";
+      String detail = "ETA:--";
+      if (simulated) {
+        next = simLCDFinished ? "DESTINATION" : simLCDNextStop;
+        detail = simLCDFinished ? "SIM TRIP DONE" : "SIM ETA:" + String(simLCDEta) + "m";
+      } else if (nextStopIndex < stopCount) {
+        next = stops[nextStopIndex].name;
+        if (realFix) {
+          double dist = geoDistanceKm(gps.location.lat(), gps.location.lng(), stops[nextStopIndex].lat, stops[nextStopIndex].lon);
+          float speed = meanSpeedKmh >= 2.0f ? meanSpeedKmh : defaultSpeedKmh;
+          int etaMin = (int)ceil(dist / fmax(1.0f, speed) * 60.0);
+          detail = "ETA~" + String(etaMin) + "m " + String(dist, 1) + "km";
+        } else detail = "Waiting for GPS";
+      } else if (stopCount > 0) { next = "ALL STOPS DONE"; detail = "Route finished"; }
+      writeLCDLine(0, "NEXT:" + next);
+      writeLCDLine(1, detail);
+      break;
+    }
+    case 5: // Physical GPS health even when browser simulation is running
+      writeLCDLine(0, "REAL SAT:" + String(gps.satellites.isValid()?gps.satellites.value():0));
+      writeLCDLine(1, realFix ? "HDOP:" + String(gps.hdop.isValid()?gps.hdop.hdop():0.0,2) : "NO GPS FIX");
+      break;
+    case 6: // Wi-Fi and hotspot
+      writeLCDLine(0, WiFi.status() == WL_CONNECTED ? "WIFI:"+String(WiFi.RSSI())+"dBm" : "WIFI: OFFLINE");
+      writeLCDLine(1, "AP:" + WiFi.softAPIP().toString());
+      break;
+    case 7: // Simulator progress or controller health
+      if (simulated) {
+        writeLCDLine(0, "SIM:" + String(simLCDProgress, 0) + "% " + String(simLCDRemaining, 1) + "km");
+        writeLCDLine(1, "SIM TIME:" + simLCDTime);
+      } else {
+        writeLCDLine(0, "SYSTEM: REAL GPS");
+        writeLCDLine(1, "UP:" + String(now/60000UL) + "m RAM:" + String(ESP.getFreeHeap()/1024UL) + "K");
+      }
+      break;
+  }
+}
+
+void markDashboardBrowserOpened() {
+  if (dashboardBrowserOpened) return;
+  dashboardBrowserOpened = true;
+  lcdPage = 1;  // Resume with GPS/simulator details; IP remains page 0 later.
+  lastLcdPageTick = millis();
+  lastLCDUpdate = 0;
+  Serial.println("Dashboard opened in browser - LCD rotating pages enabled");
+}
+
+void handleHome() {
+  server.sendHeader("Cache-Control", "no-cache");
+  server.send_P(200, "text/html", DASHBOARD_HTML);
+  markDashboardBrowserOpened();
+}
+
+void handleLive() {
+  JsonDocument doc;
+  doc["bus_id"] = busId;
+  doc["route_name"] = routeName;
+  doc["next_stop_index"] = nextStopIndex;
+  doc["uptime_s"] = millis() / 1000;
+  doc["free_heap_bytes"] = ESP.getFreeHeap();
+
+  JsonObject wifi = doc["wifi"].to<JsonObject>();
+  bool connected = WiFi.status() == WL_CONNECTED;
+  wifi["connected"] = connected;
+  wifi["ip"] = connected ? WiFi.localIP().toString() : "";
+  wifi["ap_ip"] = WiFi.softAPIP().toString();
+  wifi["rssi"] = connected ? WiFi.RSSI() : 0;
+
+  JsonObject gpsDoc = doc["gps"].to<JsonObject>();
+  gpsDoc["valid"] = gpsFixFresh();
+  gpsDoc["age_ms"] = gps.location.isValid() ? gps.location.age() : -1;
+  if (gpsFixFresh()) {
+    gpsDoc["lat"] = gps.location.lat();
+    gpsDoc["lon"] = gps.location.lng();
+  } else { gpsDoc["lat"] = nullptr; gpsDoc["lon"] = nullptr; }
+  gpsDoc["satellites"] = gps.satellites.isValid() ? (int)gps.satellites.value() : 0;
+  if (gps.speed.isValid() && gps.speed.age() < 5000) gpsDoc["speed_kmh"] = gps.speed.kmph();
+  else gpsDoc["speed_kmh"] = nullptr;
+  gpsDoc["avg_speed_kmh"] = speedCount > 0 ? meanSpeedKmh : 0;
+  if (gps.course.isValid() && gps.course.age() < 5000) gpsDoc["heading_deg"] = gps.course.deg();
+  else gpsDoc["heading_deg"] = nullptr;
+  if (gps.hdop.isValid() && gps.hdop.age() < 5000) gpsDoc["hdop"] = gps.hdop.hdop();
+  else gpsDoc["hdop"] = nullptr;
+
+  String json;
+  serializeJson(doc, json);
+  server.sendHeader("Cache-Control", "no-store");
+  server.send(200, "application/json", json);
+  // Also recognize an already-open dashboard tab which resumes polling
+  // after an ESP32 reboot, without requesting the homepage again.
+  markDashboardBrowserOpened();
+}
+
+void handleGetConfiguration() {
+  String value;
+  makeConfigurationJSON(value);
+  server.sendHeader("Cache-Control", "no-store");
+  server.send(200, "application/json", value);
+}
+
+void badRequest(const String& why, int code=400) {
+  JsonDocument errorDoc;
+  errorDoc["error"] = why;
+  String json;
+  serializeJson(errorDoc, json);
+  server.send(code, "application/json", json);
+}
+
+void handleSaveConfiguration() {
+  // Header is collected in setup(). Credentials travel via HTTP on LAN.
+  if (server.header("X-Admin-Key") != ADMIN_PASSWORD) {
+    badRequest("Wrong admin password", 401);
+    return;
+  }
+
+  String body = server.arg("plain");
+  if (body.length() > 4000) { badRequest("Request too large"); return; }
+  JsonDocument doc;
+  if (deserializeJson(doc, body) != DeserializationError::Ok) { badRequest("Invalid JSON"); return; }
+
+  String newId = doc["bus_id"].as<String>();
+  String newRoute = doc["route_name"].as<String>();
+  float newSpeed = doc["default_speed_kmh"] | 25.0f;
+  if (!isfinite(newSpeed) || newSpeed < 5 || newSpeed > 80 || newId.isEmpty() || newId.length() > 20 || newRoute.isEmpty() || newRoute.length() > 55) {
+    badRequest("Invalid bus details or fallback speed"); return;
+  }
+  JsonArray list = doc["stops"].as<JsonArray>();
+  if (list.isNull() || list.size() > MAX_STOPS) { badRequest("Invalid stops; maximum 12"); return; }
+  int newNext = doc["next_stop_index"] | -1;
+  if (newNext < 0 || newNext > (int)list.size()) { badRequest("Invalid next stop index"); return; }
+
+  Stop validated[MAX_STOPS];
+  size_t count=0;
+  for (JsonVariant entry : list) {
+    String name = entry["name"].as<String>();
+    double lat = entry["lat"] | NAN;
+    double lon = entry["lon"] | NAN;
+    if (name.isEmpty() || name.length() > 44 || !isfinite(lat) || !isfinite(lon) || fabs(lat) > 90 || fabs(lon) > 180) {
+      badRequest("Invalid stop name or coordinates"); return;
+    }
+    validated[count++] = {name, lat, lon};
+  }
+
+  busId = newId;
+  routeName = newRoute;
+  defaultSpeedKmh = newSpeed;
+  nextStopIndex = static_cast<size_t>(newNext);
+  stopCount = count;
+  for (size_t i=0; i<count; i++) stops[i] = validated[i];
+  arrivalStart = 0;
+  saveConfiguration();
+  server.send(200, "application/json", "{\"ok\":true}");
+}
+
+void handleSimulatorLCD() {
+  // This changes only the 16x2 LCD view. It never changes the GPS receiver,
+  // route configuration, saved settings or /api/live GPS data.
+  if (server.header("X-Admin-Key") != ADMIN_PASSWORD) {
+    badRequest("Incorrect LCD mirror admin password", 401);
+    return;
+  }
+  if (server.arg("plain").length() > 900) { badRequest("Payload too large"); return; }
+  JsonDocument doc;
+  if (deserializeJson(doc, server.arg("plain")) != DeserializationError::Ok) {
+    badRequest("Invalid simulator JSON"); return;
+  }
+  if (!doc["active"].as<bool>()) {
+    simLCDActive = false;
+    server.send(200, "application/json", "{\"ok\":true}");
+    return;
+  }
+  float speed = doc["speed_kmh"] | 0.0f;
+  float planned = doc["planned_speed_kmh"] | 40.0f;
+  float remaining = doc["remaining_km"] | 0.0f;
+  float progress = doc["progress_pct"] | 0.0f;
+  float lat = doc["lat"] | NAN;
+  float lon = doc["lon"] | NAN;
+  int eta = doc["eta_min"] | 0;
+  int mult = doc["mult"] | 1;
+  String nextName = doc["next_stop"].as<String>();
+  String clock = doc["sim_time"].as<String>();
+  if (!isfinite(speed) || speed<0 || speed>130 || !isfinite(planned) || planned<0 || planned>130 ||
+      !isfinite(remaining) || remaining<0 || remaining>100000 ||
+      !isfinite(progress) || progress<0 || progress>100 ||
+      !isfinite(lat) || fabs(lat)>90 || !isfinite(lon) || fabs(lon)>180 ||
+      eta<0 || eta>99999 || mult<1 || mult>120 || nextName.length()>48 || clock.length()>8) {
+    badRequest("Simulator values outside valid range"); return;
+  }
+  simLCDSpeed = speed;
+  simLCDPlannedSpeed = planned;
+  simLCDRemaining = remaining;
+  simLCDProgress = progress;
+  simLCDEta = eta;
+  simLCDMultiplier = mult;
+  simLCDLat = lat;
+  simLCDLon = lon;
+  simLCDNextStop = nextName;
+  simLCDTime = clock;
+  simLCDPlaying = doc["playing"].as<bool>();
+  simLCDFinished = doc["finished"].as<bool>();
+  bool wasSim = simLCDActive;
+  simLCDLastSeen = millis();
+  simLCDActive = true;
+  if (!wasSim) {
+    lcdPage = 1;
+    lastLcdPageTick = millis();
+    Serial.println("LCD SIM mirroring enabled (explicitly labeled SIM)");
+  }
+  server.send(200, "application/json", "{\"ok\":true}");
+}
+
+// -------- ESP32 LOCAL TRIP HISTORY (NVS, no cloud) --------
+static const uint8_t TRIP_HISTORY_CAPACITY = 30;
+uint32_t tripSequence = 0;
+struct LiveGPSTrip {
+  bool active = false;
+  uint32_t startEpoch = 0;
+  unsigned long startedMs = 0;
+  unsigned long lastSampleMs = 0;
+  double prevLat = 0, prevLon = 0;
+  bool havePrev = false;
+  double distanceKm = 0;
+  float speedSum = 0;
+  float maxSpeed = 0;
+  uint32_t speedSamples = 0;
+};
+LiveGPSTrip gpsTrip;
+
+bool appendTrip(String kind, String status, uint32_t startEpoch, uint32_t endEpoch,
+                uint32_t durationSeconds, float distanceKm, float avgKmh, float maxKmh,
+                int stopTotal) {
+  uint32_t id = ++tripSequence;
+  const String key = "trip" + String(id % TRIP_HISTORY_CAPACITY);
+  JsonDocument doc;
+  doc["id"] = id; doc["kind"] = kind; doc["status"] = status;
+  doc["bus"] = busId; doc["route"] = routeName;
+  doc["from"] = stopCount ? stops[0].name : "Not configured";
+  doc["to"] = stopCount ? stops[stopCount-1].name : "Not configured";
+  doc["start_epoch"] = startEpoch; doc["end_epoch"] = endEpoch;
+  doc["duration_s"] = durationSeconds;
+  doc["distance_km"] = roundf(distanceKm * 100.0f) / 100.0f;
+  doc["avg_kmh"] = roundf(avgKmh * 10.0f) / 10.0f;
+  doc["max_kmh"] = roundf(maxKmh * 10.0f) / 10.0f;
+  doc["stops"] = stopTotal;
+  String saved; serializeJson(doc, saved);
+  if (tripPreferences.putString(key.c_str(), saved) == 0) {
+    Serial.println("Trip history write failed (NVS storage unavailable)");
+    tripSequence--; return false;
+  }
+  if (tripPreferences.putUInt("sequence", tripSequence) == 0) {
+    Serial.println("Trip index write failed (NVS storage unavailable)");
+    tripSequence--; return false;
+  }
+  return true;
+}
+
+void sampleGPSTrip(unsigned long now) {
+  if (!gpsTrip.active || now - gpsTrip.lastSampleMs < 2000UL) return;
+  gpsTrip.lastSampleMs = now;
+  if (!gpsFixFresh() || !gps.speed.isValid() || gps.speed.age() >= 5000) return;
+  float speed = (float)gps.speed.kmph();
+  if (!isfinite(speed) || speed < 0 || speed > 145) return;
+  const double lat = gps.location.lat(), lon = gps.location.lng();
+  if (gpsTrip.havePrev) {
+    const double segmentKm = geoDistanceKm(gpsTrip.prevLat, gpsTrip.prevLon, lat, lon);
+    // Reject small GPS jitter and physically improbable 2-second jumps.
+    if (speed >= 3.0f && segmentKm >= 0.008 && segmentKm <= 0.095)
+      gpsTrip.distanceKm += segmentKm;
+  }
+  gpsTrip.havePrev = true; gpsTrip.prevLat = lat; gpsTrip.prevLon = lon;
+  if (speed >= 3.0f) { gpsTrip.speedSum += speed; gpsTrip.speedSamples++; }
+  if (speed > gpsTrip.maxSpeed) gpsTrip.maxSpeed = speed;
+}
+
+bool historyAuthorized() {
+  if (server.header("X-Admin-Key") == ADMIN_PASSWORD) return true;
+  badRequest("Incorrect admin password for trip history", 401); return false;
+}
+bool readTripJSON(JsonDocument& doc) {
+  String body = server.arg("plain");
+  if (body.length() > 800 || deserializeJson(doc, body) != DeserializationError::Ok) {
+    badRequest("Invalid or oversized trip request"); return false;
+  }
+  return true;
+}
+uint32_t safeEpoch(uint32_t n) {
+  return (n >= 1700000000UL && n <= 4102444800UL) ? n : 0;
+}
+void handleTripsGet() {
+  JsonDocument out; out["capacity"] = TRIP_HISTORY_CAPACITY;
+  out["gps_active"] = gpsTrip.active;
+  JsonArray entries = out["trips"].to<JsonArray>();
+  for (uint32_t i = 0; i < TRIP_HISTORY_CAPACITY && i < tripSequence; i++) {
+    uint32_t id = tripSequence - i;
+    String serialized = tripPreferences.getString(("trip"+String(id % TRIP_HISTORY_CAPACITY)).c_str(), "");
+    if (serialized.isEmpty()) continue;
+    JsonDocument row;
+    if (deserializeJson(row, serialized) != DeserializationError::Ok) continue;
+    if (row["id"].as<uint32_t>() != id) continue;
+    entries.add(row.as<JsonVariantConst>());
+  }
+  String result; serializeJson(out, result);
+  server.sendHeader("Cache-Control", "no-store");
+  server.send(200,"application/json",result);
+}
+void handleTripsStartGPS() {
+  if (!historyAuthorized()) return;
+  if (gpsTrip.active) { badRequest("A real GPS trip is already being recorded", 409); return; }
+  JsonDocument body; if (!readTripJSON(body)) return;
+  if (!gpsFixFresh()) { badRequest("No fresh GPS fix; wait for valid GPS", 409); return; }
+  uint32_t epoch = safeEpoch(body["epoch"].as<uint32_t>());
+  if (!epoch) { badRequest("Browser time invalid; check device clock"); return; }
+  gpsTrip = LiveGPSTrip(); gpsTrip.active = true; gpsTrip.startEpoch = epoch;
+  gpsTrip.startedMs = millis(); gpsTrip.lastSampleMs = millis() - 2000UL;
+  gpsTrip.prevLat = gps.location.lat(); gpsTrip.prevLon = gps.location.lng(); gpsTrip.havePrev = true;
+  server.send(200,"application/json","{\"ok\":true}");
+}
+void handleTripsStopGPS() {
+  if (!historyAuthorized()) return;
+  if (!gpsTrip.active) { badRequest("No active GPS trip", 409); return; }
+  JsonDocument body; if (!readTripJSON(body)) return;
+  uint32_t epoch = safeEpoch(body["epoch"].as<uint32_t>());
+  if (!epoch) { badRequest("Browser time invalid"); return; }
+  sampleGPSTrip(millis());
+  uint32_t duration = (uint32_t)((millis() - gpsTrip.startedMs) / 1000UL);
+  float avg = gpsTrip.speedSamples ? gpsTrip.speedSum / gpsTrip.speedSamples : 0;
+  if (!appendTrip("GPS", "STOPPED", gpsTrip.startEpoch, epoch, duration,
+             (float)gpsTrip.distanceKm, avg, gpsTrip.maxSpeed, (int)stopCount)) {
+    badRequest("ESP32 flash storage is full or unavailable", 507); return;
+  }
+  gpsTrip.active = false;
+  server.send(200,"application/json","{\"ok\":true}");
+}
+void handleTripsRecordSIM() {
+  if (!historyAuthorized()) return;
+  JsonDocument doc; if (!readTripJSON(doc)) return;
+  if (doc["kind"].as<String>() != "SIM") { badRequest("Only SIM summaries allowed here"); return; }
+  String status = doc["status"].as<String>();
+  if (status != "COMPLETED" && status != "STOPPED") { badRequest("Invalid trip status"); return; }
+  uint32_t start = safeEpoch(doc["start_epoch"].as<uint32_t>());
+  uint32_t end = safeEpoch(doc["end_epoch"].as<uint32_t>());
+  uint32_t duration = doc["duration_s"].as<uint32_t>();
+  float distance = doc["distance_km"].as<float>();
+  float avg = doc["avg_kmh"].as<float>();
+  float peak = doc["max_kmh"].as<float>();
+  int stopTotal = doc["stops"].as<int>();
+  if (!start || !end || end < start || duration > 604800 ||
+      !isfinite(distance) || distance < 0 || distance > 10000 ||
+      !isfinite(avg) || avg < 0 || avg > 145 ||
+      !isfinite(peak) || peak < 0 || peak > 145 || stopTotal < 0 || stopTotal > MAX_STOPS) {
+    badRequest("Trip summary values are invalid"); return;
+  }
+  if (!appendTrip("SIM", status, start, end, duration, distance, avg, peak, stopTotal)) {
+    badRequest("ESP32 flash storage is full or unavailable", 507); return;
+  }
+  server.send(200,"application/json","{\"ok\":true}");
+}
+void handleTripsDelete() {
+  if (!historyAuthorized()) return;
+  JsonDocument doc; if (!readTripJSON(doc)) return;
+  uint32_t id = doc["id"].as<uint32_t>();
+  if (id == 0 || id > tripSequence || (tripSequence - id) >= TRIP_HISTORY_CAPACITY) {
+    badRequest("Trip not found", 404); return;
+  }
+  String key = "trip" + String(id % TRIP_HISTORY_CAPACITY);
+  String item = tripPreferences.getString(key.c_str(), "");
+  JsonDocument stored;
+  if (item.isEmpty() || deserializeJson(stored,item)!=DeserializationError::Ok || stored["id"].as<uint32_t>() != id) {
+    badRequest("Trip not found", 404); return;
+  }
+  tripPreferences.remove(key.c_str());
+  server.send(200,"application/json","{\"ok\":true}");
+}
+void handleTripsClear() {
+  if (!historyAuthorized()) return;
+  if (gpsTrip.active) { badRequest("Finish the active GPS trip before clearing history", 409); return; }
+  tripPreferences.clear(); tripSequence = 0;
+  server.send(200,"application/json","{\"ok\":true}");
+}
+// -------- END TRIP HISTORY --------
+
+void setup() {
+  Serial.begin(115200);
+  // Larger UART buffer helps preserve NMEA sentences during web requests.
+  gpsSerial.setRxBufferSize(2048);
+  gpsSerial.begin(9600, SERIAL_8N1, GPS_RX_PIN, GPS_TX_PIN);
+  Wire.begin(LCD_SDA_PIN, LCD_SCL_PIN);
+  lcd.init();
+  lcd.backlight();
+  writeLCDLine(0, "SMART BUS SYSTEM");
+  writeLCDLine(1, "Starting Web...");
+  // Startup IP stays on LCD until HTTP dashboard is opened.
+  lastLcdPageTick = millis();
+
+  preferences.begin("smartbus", false);
+  loadConfiguration();
+  tripPreferences.begin("bustrips", false);
+  tripSequence = tripPreferences.getUInt("sequence", 0);
+
+  WiFi.mode(WIFI_AP_STA);
+  WiFi.setSleep(false);  // More responsive local dashboard; uses more power
+  WiFi.softAP(AP_SSID, AP_PASSWORD);
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+
+  const char* keys[] = {"X-Admin-Key"};
+  server.collectHeaders(keys, 1);
+  server.on("/", HTTP_GET, handleHome);
+  server.on("/api/live", HTTP_GET, handleLive);
+  server.on("/api/config", HTTP_GET, handleGetConfiguration);
+  server.on("/api/config", HTTP_POST, handleSaveConfiguration);
+  server.on("/api/lcd-sim", HTTP_POST, handleSimulatorLCD);
+  server.on("/api/trips", HTTP_GET, handleTripsGet);
+  server.on("/api/trips/start-gps", HTTP_POST, handleTripsStartGPS);
+  server.on("/api/trips/stop-gps", HTTP_POST, handleTripsStopGPS);
+  server.on("/api/trips/record", HTTP_POST, handleTripsRecordSIM);
+  server.on("/api/trips/delete", HTTP_POST, handleTripsDelete);
+  server.on("/api/trips/clear", HTTP_POST, handleTripsClear);
+  server.onNotFound([](){ badRequest("Not found", 404); });
+  server.begin();
+
+  if (String(AP_PASSWORD) == "CHANGE_THIS_AP_PASSWORD" ||
+      String(ADMIN_PASSWORD) == "CHANGE_THIS_ADMIN_PASSWORD") {
+    Serial.println("WARNING: CHANGE THE DEFAULT AP AND ADMIN PASSWORDS BEFORE DEPLOYMENT");
+  }
+  Serial.println("\nSMART BUS - LOCAL DASHBOARD READY");
+  Serial.print("Direct AP: "); Serial.println(AP_SSID);
+  Serial.print("AP IP: http://"); Serial.println(WiFi.softAPIP());
+  Serial.println("Join the same hotspot/router as ESP32 for its station IP.");
+  lastLCDSwitch = millis();
+}
+
+void loop() {
+  unsigned long now = millis();
+
+  // IMPORTANT: Keep reading NMEA bytes, even while serving webpage/API.
+  while (gpsSerial.available()) gps.encode(gpsSerial.read());
+
+  server.handleClient();
+  updateSpeedAverage(now);
+  sampleGPSTrip(now);
+  updateNextStop(now);
+  updateLCD(now);
+
+  if (now-lastWiFiRetry >= 10000) {
+    lastWiFiRetry=now;
+    if (WiFi.status()!=WL_CONNECTED) WiFi.reconnect();
+  }
+  bool connected=WiFi.status()==WL_CONNECTED;
+  if (connected!=previousWiFiState) {
+    previousWiFiState=connected;
+    if (connected) {
+      // If browser has not opened yet, LCD automatically shows the new station IP.
+      Serial.print("WiFi connected. Open http://");
+      Serial.println(WiFi.localIP());
+    } else {
+      // If browser has not opened yet, LCD automatically shows the AP IP.
+      Serial.println("WiFi disconnected; direct AP http://192.168.4.1 still available");
+    }
+  }
+  if (now-lastSerial>=5000) {
+    lastSerial=now;
+    Serial.printf("WiFi: %s | GPS: %s | Sat: %u | Speed: %.1f km/h | Next stop: %u/%u\n",
+      connected?"ONLINE":"OFFLINE", gpsFixFresh()?"VALID":"WAITING",
+      (unsigned)(gps.satellites.isValid()?gps.satellites.value():0),
+      gps.speed.isValid()?gps.speed.kmph():0.0,
+      (unsigned)nextStopIndex, (unsigned)stopCount);
+  }
+}
